@@ -63,7 +63,7 @@ def kl_loss(z_p, logs_q, m_p, logs_p, z_mask):
 class WavLMLoss(torch.nn.Module):
     def __init__(self, model, wd, model_sr, slm_sr=16000):
         super(WavLMLoss, self).__init__()
-        self.wavlm = AutoModel.from_pretrained(model)
+        self.wavlm = AutoModel.from_pretrained(model, use_safetensors=True)
         self.wd = wd
         self.resample = torchaudio.transforms.Resample(model_sr, slm_sr)
         self.wavlm.eval()

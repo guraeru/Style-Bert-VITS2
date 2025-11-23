@@ -130,6 +130,10 @@ def run():
     backend = "nccl"
     if platform.system() == "Windows":
         backend = "gloo"  # If Windows,switch to gloo backend.
+    
+    # Disable libuv for PyTorch builds without libuv support
+    os.environ["USE_LIBUV"] = "0"
+    
     dist.init_process_group(
         backend=backend,
         init_method="env://",
