@@ -5,8 +5,10 @@ from queue import Queue
 from threading import Thread
 from typing import Any, Optional
 
+import numpy as np
 import soundfile as sf
 import torch
+from scipy import signal
 from tqdm import tqdm
 
 from config import get_path_config
@@ -17,6 +19,35 @@ from style_bert_vits2.utils.stdout_wrapper import SAFE_STDOUT
 def is_audio_file(file: Path) -> bool:
     supported_extensions = [".wav", ".flac", ".mp3", ".ogg", ".opus", ".m4a"]
     return file.suffix.lower() in supported_extensions
+
+
+def read_audio(path: str, sampling_rate: int = 16000) -> torch.Tensor:
+    """
+    音声ファイルを読み込んでPyTorchテンソルに変換する。
+    torchaudio.list_audio_backends()を使わない代替実装。
+    
+    Args:
+        path: 音声ファイルのパス
+        sampling_rate: 目的のサンプリングレート (デフォルト: 16000)
+    
+    Returns:
+        torch.Tensor: 音声データ
+    """
+    # soundfileで音声を読み込む
+    wav, sr = sf.read(path, dtype='float32')
+    
+    # モノラルに変換
+    if wav.ndim > 1:
+        wav = wav.mean(axis=1)
+    
+    # サンプリングレートを変換
+    if sr != sampling_rate:
+        # scipy.signal.resampleを使ってリサンプリング
+        num_samples = int(len(wav) * sampling_rate / sr)
+        wav = signal.resample(wav, num_samples)
+    
+    # PyTorchテンソルに変換
+    return torch.from_numpy(wav.astype(np.float32))
 
 
 def get_stamps(
@@ -40,11 +71,12 @@ def get_stamps(
         この秒数より大きい発話は無視する。
     """
 
-    (get_speech_timestamps, _, read_audio, *_) = utils
+    (get_speech_timestamps, *_) = utils
     sampling_rate = 16000  # 16kHzか8kHzのみ対応
 
     min_ms = int(min_sec * 1000)
 
+    # 独自のread_audio関数を使用（torchaudio.list_audio_backends()の問題を回避）
     wav = read_audio(str(audio_file), sampling_rate=sampling_rate)
     speech_timestamps = get_speech_timestamps(
         wav,
