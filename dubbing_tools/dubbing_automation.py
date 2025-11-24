@@ -44,8 +44,9 @@ class DubbingAutomation:
         self.tolerance_seconds = tolerance_seconds
         self.min_length_scale = min_length_scale
         
-        # モデルパスを自動構築
-        model_dir = Path("model_assets") / model_name
+        # モデルパスを自動構築（このファイルの場所から相対的に検索）
+        script_dir = Path(__file__).parent.parent  # dubbing_tools の親 = Style-Bert-VITS2
+        model_dir = script_dir / "model_assets" / model_name
         model_path = None
         
         # .safetensorsファイルを検索
@@ -55,7 +56,7 @@ class DubbingAutomation:
                 break
         
         if not model_path:
-            raise FileNotFoundError(f"モデルファイルが見つかりません: {model_dir}")
+            raise FileNotFoundError(f"モデルファイルが見つかりません: {model_dir.absolute()}")
         
         config_path = model_dir / "config.json"
         style_vec_path = model_dir / "style_vectors.npy"
