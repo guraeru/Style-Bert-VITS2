@@ -1,238 +1,182 @@
 """テキスト前処理モジュール
 
-TTSモデルの読み精度を向上させるため、英語をカタカナに変換します。
+英語を日本語話者が読みやすいカタカナ英語に置き換えることを目的とします。
 """
 
-import re
+from __future__ import annotations
+
 import csv
+import re
+import requests
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Match, Optional
+import urllib.parse
 
 
 class TextPreprocessor:
-    """
-    テキスト前処理クラス
-    
-    英語をカタカナに変換してTTS精度を向上させます。
-    """
-    
-    # ローマ字→カタカナマッピング辞書（網羅版）
-    ROMAJI_MAP = {
-        # 4文字の組み合わせ
-        'ksha': 'クシャ', 'kshu': 'クシュ', 'ksho': 'クショ',
-        'tsya': 'チャ', 'tsyu': 'チュ', 'tsyo': 'チョ',
-        
-        # 3文字の組み合わせ
-        'kya': 'キャ', 'kyi': 'キィ', 'kyu': 'キュ', 'kye': 'キェ', 'kyo': 'キョ',
-        'kwa': 'クァ', 'kwi': 'クィ', 'kwu': 'クゥ', 'kwe': 'クェ', 'kwo': 'クォ',
-        'gya': 'ギャ', 'gyi': 'ギィ', 'gyu': 'ギュ', 'gye': 'ギェ', 'gyo': 'ギョ',
-        'gwa': 'グァ', 'gwi': 'グィ', 'gwu': 'グゥ', 'gwe': 'グェ', 'gwo': 'グォ',
-        'sha': 'シャ', 'shi': 'シ', 'shu': 'シュ', 'she': 'シェ', 'sho': 'ショ',
-        'sya': 'シャ', 'syi': 'シィ', 'syu': 'シュ', 'sye': 'シェ', 'syo': 'ショ',
-        'swa': 'スァ', 'swi': 'スィ', 'swu': 'スゥ', 'swe': 'スェ', 'swo': 'スォ',
-        'zya': 'ジャ', 'zyi': 'ジィ', 'zyu': 'ジュ', 'zye': 'ジェ', 'zyo': 'ジョ',
-        'cha': 'チャ', 'chi': 'チ', 'chu': 'チュ', 'che': 'チェ', 'cho': 'チョ',
-        'tya': 'チャ', 'tyi': 'チィ', 'tyu': 'チュ', 'tye': 'チェ', 'tyo': 'チョ',
-        'tsa': 'ツァ', 'tsi': 'ツィ', 'tsu': 'ツ', 'tse': 'ツェ', 'tso': 'ツォ',
-        'tha': 'テァ', 'thi': 'ティ', 'thu': 'テゥ', 'the': 'テェ', 'tho': 'テォ',
-        'twa': 'トァ', 'twi': 'トィ', 'twu': 'トゥ', 'twe': 'トェ', 'two': 'トォ',
-        'dya': 'ヂャ', 'dyi': 'ヂィ', 'dyu': 'ヂュ', 'dye': 'ヂェ', 'dyo': 'ヂョ',
-        'dha': 'デァ', 'dhi': 'ディ', 'dhu': 'デゥ', 'dhe': 'デェ', 'dho': 'デォ',
-        'dwa': 'ドァ', 'dwi': 'ドィ', 'dwu': 'ドゥ', 'dwe': 'ドェ', 'dwo': 'ドォ',
-        'nya': 'ニャ', 'nyi': 'ニィ', 'nyu': 'ニュ', 'nye': 'ニェ', 'nyo': 'ニョ',
-        'hya': 'ヒャ', 'hyi': 'ヒィ', 'hyu': 'ヒュ', 'hye': 'ヒェ', 'hyo': 'ヒョ',
-        'bya': 'ビャ', 'byi': 'ビィ', 'byu': 'ビュ', 'bye': 'ビェ', 'byo': 'ビョ',
-        'pya': 'ピャ', 'pyi': 'ピィ', 'pyu': 'ピュ', 'pye': 'ピェ', 'pyo': 'ピョ',
-        'fya': 'フャ', 'fyi': 'フィ', 'fyu': 'フュ', 'fye': 'フェ', 'fyo': 'フョ',
-        'mya': 'ミャ', 'myi': 'ミィ', 'myu': 'ミュ', 'mye': 'ミェ', 'myo': 'ミョ',
-        'rya': 'リャ', 'ryi': 'リィ', 'ryu': 'リュ', 'rye': 'リェ', 'ryo': 'リョ',
-        'lya': 'リャ', 'lyi': 'リィ', 'lyu': 'リュ', 'lye': 'リェ', 'lyo': 'リョ',
-        'vya': 'ヴャ', 'vyi': 'ヴィ', 'vyu': 'ヴュ', 'vye': 'ヴェ', 'vyo': 'ヴョ',
-        
-        # 2文字の組み合わせ（基本）
-        'ka': 'カ', 'ki': 'キ', 'ku': 'ク', 'ke': 'ケ', 'ko': 'コ',
-        'ga': 'ガ', 'gi': 'ギ', 'gu': 'グ', 'ge': 'ゲ', 'go': 'ゴ',
-        'sa': 'サ', 'si': 'シ', 'su': 'ス', 'se': 'セ', 'so': 'ソ',
-        'za': 'ザ', 'zi': 'ジ', 'zu': 'ズ', 'ze': 'ゼ', 'zo': 'ゾ',
-        'ta': 'タ', 'ti': 'チ', 'tu': 'ツ', 'te': 'テ', 'to': 'ト',
-        'da': 'ダ', 'di': 'ヂ', 'du': 'ヅ', 'de': 'デ', 'do': 'ド',
-        'na': 'ナ', 'ni': 'ニ', 'nu': 'ヌ', 'ne': 'ネ', 'no': 'ノ',
-        'ha': 'ハ', 'hi': 'ヒ', 'hu': 'フ', 'fu': 'フ', 'he': 'ヘ', 'ho': 'ホ',
-        'ba': 'バ', 'bi': 'ビ', 'bu': 'ブ', 'be': 'ベ', 'bo': 'ボ',
-        'pa': 'パ', 'pi': 'ピ', 'pu': 'プ', 'pe': 'ペ', 'po': 'ポ',
-        'ma': 'マ', 'mi': 'ミ', 'mu': 'ム', 'me': 'メ', 'mo': 'モ',
-        'ya': 'ヤ', 'yi': 'イ', 'yu': 'ユ', 'ye': 'イェ', 'yo': 'ヨ',
-        'ra': 'ラ', 'ri': 'リ', 'ru': 'ル', 're': 'レ', 'ro': 'ロ',
-        'wa': 'ワ', 'wi': 'ウィ', 'wu': 'ウ', 'we': 'ウェ', 'wo': 'ヲ',
-        'nn': 'ン',
-        
-        # 英語用の追加マッピング（C, L, V, F, J, Q, X など）
-        'ca': 'カ', 'ci': 'シ', 'cu': 'ク', 'ce': 'セ', 'co': 'コ',
-        'la': 'ラ', 'li': 'リ', 'lu': 'ル', 'le': 'レ', 'lo': 'ロ',
-        'va': 'ヴァ', 'vi': 'ヴィ', 'vu': 'ヴ', 've': 'ヴェ', 'vo': 'ヴォ',
-        'fa': 'ファ', 'fi': 'フィ', 'fu': 'フ', 'fe': 'フェ', 'fo': 'フォ',
-        'ja': 'ジャ', 'ji': 'ジ', 'ju': 'ジュ', 'je': 'ジェ', 'jo': 'ジョ',
-        'qa': 'クァ', 'qi': 'クィ', 'qu': 'クゥ', 'qe': 'クェ', 'qo': 'クォ',
-        'xa': 'クサ', 'xi': 'クシ', 'xu': 'クス', 'xe': 'クセ', 'xo': 'クソ',
-        
-        # ウ段拗音
-        'wha': 'ウァ', 'whi': 'ウィ', 'whu': 'ウ', 'whe': 'ウェ', 'who': 'ウォ',
-        
-        # 小さいカナ
-        'xya': 'ャ', 'xyu': 'ュ', 'xyo': 'ョ',
-        'xwa': 'ヮ', 'xka': 'ヵ', 'xke': 'ヶ',
-        'xtu': 'ッ', 'xtsu': 'ッ',
-        'xa': 'ァ', 'xi': 'ィ', 'xu': 'ゥ', 'xe': 'ェ', 'xo': 'ォ',
-        
-        # 特殊な組み合わせ（英語の th, ph など）
-        'tha': 'サ', 'thi': 'シ', 'thu': 'ス', 'the': 'ゼ', 'tho': 'ソ',
-        'pha': 'ファ', 'phi': 'フィ', 'phu': 'フ', 'phe': 'フェ', 'pho': 'フォ',
-        
-        # 1文字（母音と撥音）
-        'a': 'ア', 'i': 'イ', 'u': 'ウ', 'e': 'エ', 'o': 'オ',
-        'n': 'ン',
-    }
-    
-    def __init__(self, adjustments_csv: Optional[Path] = None):
-        """
-        初期化
-        
-        Args:
-            adjustments_csv: 読み方調整CSVファイルパス(Noneならデフォルトのreading_adjustments.csvを使用)
-        """
+    """読み方調整とカタカナ英語変換を担うクラス。"""
+
+    WORD_PATTERN = re.compile(r"[A-Za-z]+(?:'[A-Za-z]+)?")
+
+    def __init__(
+        self,
+        adjustments_csv: Optional[Path] = None,
+        english_dict_csv: Optional[Path] = None,
+    ) -> None:
+        """設定ファイルを読み込んで辞書を初期化する。"""
+
         if adjustments_csv is None:
-            # デフォルト: このファイルと同じディレクトリのreading_adjustments.csv
             adjustments_csv = Path(__file__).parent / "reading_adjustments.csv"
         elif isinstance(adjustments_csv, str):
             adjustments_csv = Path(adjustments_csv)
-        
+
+        if english_dict_csv is None:
+            english_dict_csv = Path(__file__).parent / "english_katakana_dict.csv"
+        elif isinstance(english_dict_csv, str):
+            english_dict_csv = Path(english_dict_csv)
+
         self.reading_adjustments = self._load_adjustments(adjustments_csv)
-        pass
-    
+        self.english_dict = self._load_english_dict(english_dict_csv)
+        self.english_dict_csv = english_dict_csv
+        self._api_cache: Dict[str, Optional[str]] = {}  # API結果のキャッシュ
+
     def convert_english_to_katakana(self, text: str) -> str:
-        """
-        英語をカタカナに変換（カスタムローマ字マッピング）
-        
-        Args:
-            text: 変換するテキスト
-            
-        Returns:
-            英語がカタカナに変換されたテキスト
-        """
-        # 英単語を検出（連続するアルファベット）
-        def replace_english(match):
+        """英単語を辞書→Web APIの順でカタカナ英語に変換する。"""
+
+        def replace(match: Match[str]) -> str:
             english_word = match.group(0)
-            try:
-                # ローマ字→カタカナ変換
-                katakana = self._romaji_to_katakana(english_word)
+            
+            # 1. 既存の辞書を参照
+            katakana = self._lookup_dictionary(english_word)
+            if katakana:
                 return katakana
-            except Exception as e:
-                print(f"カタカナ変換エラー ({english_word}): {e}")
-                return english_word
+
+            # 2. Web APIで取得して辞書に登録
+            katakana = self._fetch_and_register(english_word)
+            if katakana:
+                return katakana
+
+            # 3. 変換できない場合はそのまま返す
+            return english_word
+
+        return self.WORD_PATTERN.sub(replace, text)
+
+    def _fetch_and_register(self, english_word: str) -> Optional[str]:
+        """LLMまたはWeb APIで英単語のカタカナ表記を取得し、辞書に登録する。"""
         
-        # 英単語パターン（大文字小文字含む）
-        pattern = r'[a-zA-Z]+'
-        result = re.sub(pattern, replace_english, text)
+        base_word = english_word.lower()
         
-        return result
+        # 既にAPI呼び出し済みの場合はキャッシュから返す
+        if base_word in self._api_cache:
+            return self._api_cache[base_word]
+        
+        # Web APIで取得
+        try:
+            url = f"https://www.sljfaq.org/cgi/e2k.cgi?o=json&word={urllib.parse.quote(base_word)}&lang=ja"
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            }
+            response = requests.get(url, headers=headers, timeout=5)
+            
+            if response.status_code == 200:
+                data = response.json()
+                
+                # 単語単位でカタカナを取得
+                if "words" in data and len(data["words"]) > 0:
+                    word_data = data["words"][0]
+                    katakana = word_data.get("j_pron_spell", "")
+                    
+                    if katakana:
+                        # 辞書に追加
+                        self.english_dict[base_word] = katakana
+                        self._api_cache[base_word] = katakana
+                        
+                        # CSVファイルに追記
+                        self._append_to_csv(base_word, katakana)
+                        
+                        print(f"[Web API] {english_word} → {katakana} (辞書に登録)")
+                        return katakana
+            
+        except Exception as e:
+            print(f"[INFO] Web API失敗 ({english_word}): {e}")
+        
+        # 失敗時はキャッシュに記録
+        self._api_cache[base_word] = None
+        return None
     
-    def _romaji_to_katakana(self, text: str) -> str:
-        """
-        ローマ字をカタカナに変換（内部メソッド）
+    def _append_to_csv(self, english: str, katakana: str) -> None:
+        """辞書CSVファイルに新しいエントリを追記する。"""
         
-        英語の単語を日本語的な発音に近いカタカナに変換します。
-        例: "Coloso" → "コロソ", "Hello" → "ハロー"
+        try:
+            with open(self.english_dict_csv, 'a', encoding='utf-8-sig', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerow([english, katakana])
+        except Exception as e:
+            print(f"[WARN] CSV追記エラー: {e}")
+    
+    def _lookup_dictionary(self, english_word: str) -> Optional[str]:
+        """辞書参照時に簡単な語尾ゆれを吸収する。"""
+
+        base = english_word.lower()
+        candidates = [base]
+
+        if base.endswith("'s"):
+            candidates.append(base[:-2])
+        if base.endswith("es"):
+            candidates.append(base[:-2])
+        if base.endswith("s"):
+            candidates.append(base[:-1])
+        if base.endswith("ed"):
+            candidates.append(base[:-2])
+        if base.endswith("ing"):
+            candidates.append(base[:-3])
+
+        for candidate in candidates:
+            if candidate in self.english_dict:
+                return self.english_dict[candidate]
+
+        return None
+
+    def _load_english_dict(self, csv_path: Path) -> Dict[str, str]:
+        """
+        CSVファイルから英単語→カタカナ辞書を読み込む
+        
+        CSVフォーマット: 英単語,カタカナ
+        例: Hello,ハロー
         
         Args:
-            text: ローマ字テキスト
+            csv_path: CSVファイルパス
             
         Returns:
-            カタカナテキスト
+            英単語→カタカナ辞書（キーは小文字）
         """
-        text_lower = text.lower()
-        result = []
-        i = 0
+        english_dict = {}
         
-        # 母音の定義
-        vowels = set('aeiou')
+        if not csv_path.exists():
+            print(f"[INFO] 英単語辞書ファイルが見つかりません: {csv_path}")
+            print("       Web API変換のみで動作します。")
+            return english_dict
         
-        # 特殊な子音マッピング（単独または特定の条件下で使用）
-        consonant_alone = {
-            'b': 'ブ', 'c': 'ク', 'd': 'ド', 'f': 'フ', 'g': 'グ',
-            'h': 'フ', 'j': 'ジュ', 'k': 'ク', 'l': 'ル', 'm': 'ム',
-            'n': 'ン', 'p': 'プ', 'q': 'ク', 'r': 'ル', 's': 'ス',
-            't': 'ト', 'v': 'ヴ', 'w': 'ウ', 'x': 'クス', 'y': 'イ', 'z': 'ズ',
-        }
-        
-        while i < len(text_lower):
-            # 4文字マッチを試す
-            if i + 4 <= len(text_lower):
-                substr4 = text_lower[i:i+4]
-                if substr4 in self.ROMAJI_MAP:
-                    result.append(self.ROMAJI_MAP[substr4])
-                    i += 4
-                    continue
-            
-            # 3文字マッチを試す
-            if i + 3 <= len(text_lower):
-                substr3 = text_lower[i:i+3]
-                if substr3 in self.ROMAJI_MAP:
-                    result.append(self.ROMAJI_MAP[substr3])
-                    i += 3
-                    continue
-            
-            # 2文字マッチを試す
-            if i + 2 <= len(text_lower):
-                substr2 = text_lower[i:i+2]
-                if substr2 in self.ROMAJI_MAP:
-                    result.append(self.ROMAJI_MAP[substr2])
-                    i += 2
-                    continue
-            
-            # 1文字マッチを試す
-            char = text_lower[i]
-            if char in self.ROMAJI_MAP:
-                # 母音の場合
-                result.append(self.ROMAJI_MAP[char])
-                i += 1
-            elif char in consonant_alone:
-                # 子音の場合、次の文字を確認
-                if i + 1 < len(text_lower):
-                    next_char = text_lower[i+1]
-                    
-                    # 次が母音なら子音+母音を作る
-                    if next_char in vowels:
-                        # 子音+母音の組み合わせを作成
-                        combo = char + next_char
-                        
-                        # 特殊ケース: c + e/i -> se/si (英語の発音に近づける)
-                        if char == 'c' and next_char in 'ei':
-                            combo = 's' + next_char
-                        # 特殊ケース: l -> r (日本語では区別しない)
-                        elif char == 'l':
-                            combo = 'r' + next_char
-                        
-                        # 組み合わせがマッピングにあるか確認
-                        if combo in self.ROMAJI_MAP:
-                            result.append(self.ROMAJI_MAP[combo])
-                            i += 2
-                            continue
-                    
-                    # 次も子音なら、促音（ッ）を挿入してから次の処理
-                    if next_char in consonant_alone and next_char not in vowels:
-                        result.append('ッ')
-                        i += 1
+        try:
+            with open(csv_path, 'r', encoding='utf-8-sig') as f:
+                reader = csv.reader(f)
+                for row in reader:
+                    # コメント行をスキップ
+                    if not row or row[0].startswith('#'):
                         continue
-                
-                # 単独子音または末尾の子音
-                result.append(consonant_alone[char])
-                i += 1
-            else:
-                # その他の文字（記号など）は元の文字を保持
-                result.append(text[i])
-                i += 1
+                    
+                    if len(row) >= 2:
+                        english = row[0].strip().lower()  # 小文字で保存
+                        katakana = row[1].strip()
+                        if english and katakana:
+                            english_dict[english] = katakana
+            
+            print(f"[OK] 英単語辞書を{len(english_dict)}件読み込みました: {csv_path}")
+        except Exception as e:
+            print(f"[WARN] 英単語辞書ファイルの読み込みエラー: {e}")
+            print("        Web API変換のみで動作します。")
         
-        return ''.join(result)
+        return english_dict
     
     def _load_adjustments(self, csv_path: Path) -> Dict[str, str]:
         """
@@ -250,8 +194,8 @@ class TextPreprocessor:
         adjustments = {}
         
         if not csv_path.exists():
-            print(f"ℹ️ 読み方調整ファイルが見つかりません: {csv_path}")
-            print("   デフォルト設定で動作します。")
+            print(f"[INFO] 読み方調整ファイルが見つかりません: {csv_path}")
+            print("       デフォルト設定で動作します。")
             return adjustments
         
         try:
@@ -268,33 +212,22 @@ class TextPreprocessor:
                         if original and reading:
                             adjustments[original] = reading
             
-            print(f"✅ 読み方調整を{len(adjustments)}件読み込みました: {csv_path}")
+            print(f"[OK] 読み方調整を{len(adjustments)}件読み込みました: {csv_path}")
         except Exception as e:
-            print(f"⚠️ 読み方調整ファイルの読み込みエラー: {e}")
-            print("   デフォルト設定で動作します。")
+            print(f"[WARN] 読み方調整ファイルの読み込みエラー: {e}")
+            print("        デフォルト設定で動作します。")
         
         return adjustments
     
     def preprocess(self, text: str) -> str:
-        """
-        テキストを前処理
-        
-        読み方の微調整 + 英語→カタカナ変換を実行
-        
-        Args:
-            text: 変換するテキスト
-            
-        Returns:
-            前処理済みテキスト
-        """
+        """読み方調整→英語→カタカナ英語変換の順で処理する。"""
+
         # 読み方の微調整（CSVから読み込んだ辞書を使用）
         for word, reading in self.reading_adjustments.items():
             text = text.replace(word, reading)
-        
-        # 英語→カタカナ（常に実行）
-        text = self.convert_english_to_katakana(text)
-        
-        return text
+
+        # 例: "Brush Tip Shape" -> "ブラッシュ ティップ シェープ"
+        return self.convert_english_to_katakana(text)
     
     @staticmethod
     def _katakana_to_hiragana(text: str) -> str:
@@ -320,17 +253,13 @@ class TextPreprocessor:
 
 
 # モジュールレベルでインスタンスを保持（再利用）
-_preprocessor_instance = None
+_preprocessor_instance: Optional[TextPreprocessor] = None
 
 
-def get_preprocessor() -> TextPreprocessor:
-    """
-    テキスト前処理インスタンスを取得（シングルトン）
-    
-    Returns:
-        TextPreprocessorインスタンス
-    """
+def get_preprocessor(force_reload: bool = False) -> TextPreprocessor:
+    """テキスト前処理インスタンスを取得（必要に応じて再生成）。"""
+
     global _preprocessor_instance
-    if _preprocessor_instance is None:
+    if force_reload or _preprocessor_instance is None:
         _preprocessor_instance = TextPreprocessor()
     return _preprocessor_instance
