@@ -4,6 +4,9 @@ TTSモデルの読み精度を向上させるため、英語をカタカナに�
 """
 
 import re
+import csv
+from pathlib import Path
+from typing import Dict, Optional
 
 
 class TextPreprocessor:
@@ -90,8 +93,20 @@ class TextPreprocessor:
         'n': 'ン',
     }
     
-    def __init__(self):
-        """初期化"""
+    def __init__(self, adjustments_csv: Optional[Path] = None):
+        """
+        初期化
+        
+        Args:
+            adjustments_csv: 読み方調整CSVファイルパス(Noneならデフォルトのreading_adjustments.csvを使用)
+        """
+        if adjustments_csv is None:
+            # デフォルト: このファイルと同じディレクトリのreading_adjustments.csv
+            adjustments_csv = Path(__file__).parent / "reading_adjustments.csv"
+        elif isinstance(adjustments_csv, str):
+            adjustments_csv = Path(adjustments_csv)
+        
+        self.reading_adjustments = self._load_adjustments(adjustments_csv)
         pass
     
     def convert_english_to_katakana(self, text: str) -> str:
@@ -219,11 +234,52 @@ class TextPreprocessor:
         
         return ''.join(result)
     
+    def _load_adjustments(self, csv_path: Path) -> Dict[str, str]:
+        """
+        CSVファイルから読み方調整辞書を読み込む
+        
+        CSVフォーマット: 元の表記,読み方
+        例: 日本,にほん
+        
+        Args:
+            csv_path: CSVファイルパス
+            
+        Returns:
+            読み方調整辞書
+        """
+        adjustments = {}
+        
+        if not csv_path.exists():
+            print(f"ℹ️ 読み方調整ファイルが見つかりません: {csv_path}")
+            print("   デフォルト設定で動作します。")
+            return adjustments
+        
+        try:
+            with open(csv_path, 'r', encoding='utf-8-sig') as f:
+                reader = csv.reader(f)
+                for row in reader:
+                    # コメント行とヘッダーをスキップ
+                    if not row or row[0].startswith('#') or row[0] == '元の表記':
+                        continue
+                    
+                    if len(row) >= 2:
+                        original = row[0].strip()
+                        reading = row[1].strip()
+                        if original and reading:
+                            adjustments[original] = reading
+            
+            print(f"✅ 読み方調整を{len(adjustments)}件読み込みました: {csv_path}")
+        except Exception as e:
+            print(f"⚠️ 読み方調整ファイルの読み込みエラー: {e}")
+            print("   デフォルト設定で動作します。")
+        
+        return adjustments
+    
     def preprocess(self, text: str) -> str:
         """
         テキストを前処理
         
-        英語→カタカナ変換のみ実行
+        読み方の微調整 + 英語→カタカナ変換を実行
         
         Args:
             text: 変換するテキスト
@@ -231,6 +287,10 @@ class TextPreprocessor:
         Returns:
             前処理済みテキスト
         """
+        # 読み方の微調整（CSVから読み込んだ辞書を使用）
+        for word, reading in self.reading_adjustments.items():
+            text = text.replace(word, reading)
+        
         # 英語→カタカナ（常に実行）
         text = self.convert_english_to_katakana(text)
         
