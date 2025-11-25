@@ -78,6 +78,9 @@ class TextPreprocessor:
             }
             response = requests.get(url, headers=headers, timeout=5)
             
+            # エンコーディングを明示的にUTF-8に設定
+            response.encoding = 'utf-8'
+            
             if response.status_code == 200:
                 data = response.json()
                 
