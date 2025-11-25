@@ -22,6 +22,15 @@ if parent_dir not in sys.path:
 # Style-Bert-VITS2のTTSを使用
 from style_bert_vits2.tts_model import TTSModel
 
+# 英語→カタカナ変換用のテキストプリプロセッサをインポート
+try:
+    from dubbing_tools.text_preprocessor import TextPreprocessor
+    text_preprocessor = TextPreprocessor()
+    print("✅ テキストプリプロセッサを初期化しました（英語→カタカナ変換有効）")
+except Exception as e:
+    print(f"⚠️ テキストプリプロセッサの初期化に失敗しました: {e}")
+    text_preprocessor = None
+
 scale_factor = windll.shcore.GetScaleFactorForDevice(0) / 100.0
 
 # 設定ファイルの読み込み
@@ -517,13 +526,26 @@ def main_ocr_process():
     #正規化
     final_text = _normalize_text(final_text)
 
-    # 4. 結果出力
+    # 4. 英語→カタカナ変換（辞書ベース）
+    if text_preprocessor is not None:
+        try:
+            processed_text = text_preprocessor.convert_english_to_katakana(final_text)
+            if processed_text != final_text:
+                print("\n--- 英語→カタカナ変換 ---")
+                print(f"変換前: {final_text}")
+                print(f"変換後: {processed_text}")
+                print("--------------------------")
+                final_text = processed_text
+        except Exception as e:
+            print(f"⚠️ テキスト変換エラー: {e}")
+
+    # 5. 結果出力
     print("\n--- 抽出されたテキスト ---\n")
     # 不要な空白（スペース）を削除して表示
     print(final_text) 
     print("\n--------------------------")
     
-    # 5. Style-Bert-VITS2で読み上げ
+    # 6. Style-Bert-VITS2で読み上げ
     if final_text and not final_text.startswith('[') and len(final_text.strip()) > 0:
         # 読み上げ前に改行と空白を整形
         text_to_speak = final_text

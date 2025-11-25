@@ -37,85 +37,23 @@ class TextPreprocessor:
 
         self.reading_adjustments = self._load_adjustments(adjustments_csv)
         self.english_dict = self._load_english_dict(english_dict_csv)
-        self.english_dict_csv = english_dict_csv
-        self._api_cache: Dict[str, Optional[str]] = {}  # API結果のキャッシュ
 
     def convert_english_to_katakana(self, text: str) -> str:
-        """英単語を辞書→Web APIの順でカタカナ英語に変換する。"""
+        """英単語を辞書でカタカナに変換する。辞書にない単語はそのまま返す。"""
 
         def replace(match: Match[str]) -> str:
             english_word = match.group(0)
             
-            # 1. 既存の辞書を参照
+            # 辞書を参照。なければそのまま返す（VITS2が読み上げる）
             katakana = self._lookup_dictionary(english_word)
             if katakana:
                 return katakana
-
-            # 2. Web APIで取得して辞書に登録
-            katakana = self._fetch_and_register(english_word)
-            if katakana:
-                return katakana
-
-            # 3. 変換できない場合はそのまま返す
+            
             return english_word
 
         return self.WORD_PATTERN.sub(replace, text)
 
-    def _fetch_and_register(self, english_word: str) -> Optional[str]:
-        """LLMまたはWeb APIで英単語のカタカナ表記を取得し、辞書に登録する。"""
-        
-        base_word = english_word.lower()
-        
-        # 既にAPI呼び出し済みの場合はキャッシュから返す
-        if base_word in self._api_cache:
-            return self._api_cache[base_word]
-        
-        # Web APIで取得
-        try:
-            url = f"https://www.sljfaq.org/cgi/e2k.cgi?o=json&word={urllib.parse.quote(base_word)}&lang=ja"
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-            }
-            response = requests.get(url, headers=headers, timeout=5)
-            
-            # エンコーディングを明示的にUTF-8に設定
-            response.encoding = 'utf-8'
-            
-            if response.status_code == 200:
-                data = response.json()
-                
-                # 単語単位でカタカナを取得
-                if "words" in data and len(data["words"]) > 0:
-                    word_data = data["words"][0]
-                    katakana = word_data.get("j_pron_spell", "")
-                    
-                    if katakana:
-                        # 辞書に追加
-                        self.english_dict[base_word] = katakana
-                        self._api_cache[base_word] = katakana
-                        
-                        # CSVファイルに追記
-                        self._append_to_csv(base_word, katakana)
-                        
-                        print(f"[Web API] {english_word} → {katakana} (辞書に登録)")
-                        return katakana
-            
-        except Exception as e:
-            print(f"[INFO] Web API失敗 ({english_word}): {e}")
-        
-        # 失敗時はキャッシュに記録
-        self._api_cache[base_word] = None
-        return None
-    
-    def _append_to_csv(self, english: str, katakana: str) -> None:
-        """辞書CSVファイルに新しいエントリを追記する。"""
-        
-        try:
-            with open(self.english_dict_csv, 'a', encoding='utf-8-sig', newline='') as f:
-                writer = csv.writer(f)
-                writer.writerow([english, katakana])
-        except Exception as e:
-            print(f"[WARN] CSV追記エラー: {e}")
+
     
     def _lookup_dictionary(self, english_word: str) -> Optional[str]:
         """辞書参照時に簡単な語尾ゆれを吸収する。"""
@@ -157,7 +95,7 @@ class TextPreprocessor:
         
         if not csv_path.exists():
             print(f"[INFO] 英単語辞書ファイルが見つかりません: {csv_path}")
-            print("       Web API変換のみで動作します。")
+            print("       辞書なしで動作します（英単語はそのまま）。")
             return english_dict
         
         try:
@@ -177,7 +115,7 @@ class TextPreprocessor:
             print(f"[OK] 英単語辞書を{len(english_dict)}件読み込みました: {csv_path}")
         except Exception as e:
             print(f"[WARN] 英単語辞書ファイルの読み込みエラー: {e}")
-            print("        Web API変換のみで動作します。")
+            print("        辞書なしで動作します（英単語はそのまま）。")
         
         return english_dict
     
