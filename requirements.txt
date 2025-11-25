@@ -1,7 +1,7 @@
 accelerate
 cmudict
 cn2an
-faster-whisper==0.10.1
+faster-whisper>=1.0.0
 g2p_en
 GPUtil
 gradio==5.34.0
@@ -17,7 +17,7 @@ onnxruntime
 onnxruntime-directml; sys_platform == 'win32'
 onnxruntime-gpu; sys_platform != 'darwin'
 onnxsim-prebuilt
-protobuf==4.25
+protobuf>=4.25,<5
 psutil
 punctuators
 pyannote.audio>=3.1.0
