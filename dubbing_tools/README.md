@@ -1,269 +1,156 @@
-# Style-Bert-VITS2 吹き替え自動化ツール
+# dubbing_tools - Style-Bert-VITS2 吹き替え自動化ツール
 
-動画の自動吹き替えを行うアドオンツールです。SRTファイルから字幕を読み取り、TTSで音声を生成し、元の動画と結合します。
+Style-Bert-VITS2 を使用して、字幕ファイル（SRT）から日本語音声を生成し、動画に吹き替えを行うツールです。
 
-## 🚨 重要なポリシー
+## 🚀 クイックスタート
 
-**音声カットは一切行いません**
+### CLI から実行
 
-このツールは教育コンテンツなどの重要な情報を含む動画を対象としています。受講者が内容を聞き逃すことがないよう、**音声が長すぎる場合でも削除せず、話速を調整して全て再生します**。
-
-- ✅ 話速調整(length_scale)で時間を短縮
-- ✅ 許容範囲(デフォルト60秒)内の超過は許可
-- ❌ 音声の一部削除は絶対禁止
-
-### 🎵 キュー方式(Queue方式)
-
-**理想と現実の妥協案**
-
-- **理想**: 各音声をSRTの開始時刻通りに再生したい
-- **現実**: 話者の速度に完全に合わせるのは現実的ではない
-- **妥協案**: キュー方式で遅延再生
-
-音声が字幕時間を超過した場合の動作:
-
-```
-字幕A: 00:00 - 00:05 (5秒) ← SRTの開始時刻
-  → 音声A: 7秒かかった (2秒超過)
-  
-字幕B: 00:05 - 00:10 (5秒) ← 本来の開始時刻
-  → 音声B: 00:07から開始 (2秒遅延、キュー待ち)
-  → 音声カットなし、全て再生
-  
-字幕C: 00:10 - 00:15 (5秒)
-  → 音声C: 状況によりさらに遅延
-  → 無音期間があれば相殺される
-```
-
-**A音声が長引く → B音声がキューで待機 → 遅延して再生開始**という形で、全ての音声を順次再生します。音声の重複や削除は一切ありません。無音期間で時間を相殺します。
-
-## 機能
-
-1. **SRTファイル解析**: 字幕のタイミングとテキストを抽出
-2. **TTS音声生成**: Style-Bert-VITS2で字幕から音声を生成
-3. **自動話速調整**: 音声が長すぎる場合は話速を上げて再生成
-4. **動画結合**: ffmpegで元の動画に音声を重ねる(または置き換える)
-
-## インストール
-
-### 前提条件
-
-- Python 3.8以上
-- Style-Bert-VITS2がインストール済み
-- ffmpegがインストール済み
-
-### ffmpegのインストール
-
-Windows:
 ```bash
-# Chocolateyを使用
-choco install ffmpeg
+# プロジェクトルートで実行
+cd Style-Bert-VITS2
 
-# または公式サイトからダウンロード
-# https://ffmpeg.org/download.html
+# バッチ処理（config.ini の設定を使用）
+python -m dubbing_tools
+
+# モデルを指定してバッチ処理
+python -m dubbing_tools batch -m jvnv-F1-jp
+
+# 単一ファイルを処理
+python -m dubbing_tools single -v input.mp4 -s input.srt -o output.mp4
+
+# 処理対象ファイル一覧
+python -m dubbing_tools list
+
+# 設定確認
+python -m dubbing_tools config
+
+# ヘルプ
+python -m dubbing_tools --help
 ```
 
-Linux:
-```bash
-sudo apt install ffmpeg
-```
-
-macOS:
-```bash
-brew install ffmpeg
-```
-
-## 使用方法
-
-### フォルダ構成
-
-```
-プロジェクト/
-├── input_mp4/
-│   ├── srt/
-│   │   ├── video1.srt
-│   │   └── video2.srt
-│   ├── 講座A/
-│   │   ├── video1.mp4
-│   │   └── video2.mp4
-│   └── 講座B/
-│       └── video3.mp4
-└── output_mp4/
-    ├── 講座A/          # input_mp4と同じ構造で出力
-    │   ├── video1.mp4
-    │   └── video2.mp4
-    └── 講座B/
-        └── video3.mp4
-```
-
-### 基本的な使い方
+### Python から使用
 
 ```python
 from dubbing_tools import DubbingAutomation
 
-# モデル設定
+# モデル初期化
 dubbing = DubbingAutomation(
-    model_name="your_model",
-    model_path="model_assets/your_model/model.safetensors",
-    config_path="model_assets/your_model/config.json",
-    style_vec_path="model_assets/your_model/style_vectors.npy",
+    model_name="jvnv-F1-jp",  # model_assets/ 内のモデル名
     device="cuda",
 )
 
-# 吹き替え動画作成
+# 吹き替え動画を作成
 dubbing.create_dubbed_video(
-    video_path="input_mp4/講座A/video1.mp4",
-    srt_path="input_mp4/srt/video1.srt",
-    output_path="output_mp4/講座A/video1.mp4",
+    video_path="input.mp4",
+    srt_path="input.srt",
+    output_path="output.mp4",
+    overlay=True,           # 元音声に重ねる
+    audio_volume=1.0,       # 生成音声の音量
+    original_volume=0.3,    # 元音声の音量
 )
 ```
 
-### カスタム設定
-
-```python
-dubbing = DubbingAutomation(
-    model_name="your_model",
-    model_path="model_assets/your_model/model.safetensors",
-    config_path="model_assets/your_model/config.json",
-    style_vec_path="model_assets/your_model/style_vectors.npy",
-    device="cuda",
-    tolerance_seconds=30.0,  # 許容超過時間を30秒に設定
-    min_length_scale=0.6,    # 最速1.67倍速まで許可
-)
-```
-
-## パラメータ説明
-
-### DubbingAutomation初期化
-
-| パラメータ | 型 | デフォルト | 説明 |
-|---|---|---|---|
-| `model_name` | str | - | モデル名 |
-| `model_path` | str | - | モデルファイルパス |
-| `config_path` | str | - | config.jsonパス |
-| `style_vec_path` | str | - | style_vectors.npyパス |
-| `device` | str | "cuda" | 使用デバイス("cuda" or "cpu") |
-| `ffmpeg_path` | str | "ffmpeg" | ffmpegの実行ファイルパス |
-| `tolerance_seconds` | float | 60.0 | 許容超過時間(秒) |
-| `min_length_scale` | float | 0.5 | 最小話速(0.5=最速2倍速) |
-
-### create_dubbed_video
-
-| パラメータ | 型 | デフォルト | 説明 |
-|---|---|---|---|
-| `video_path` | str | - | 元の動画ファイルパス |
-| `srt_path` | str | - | SRTファイルパス |
-| `output_path` | str | - | 出力動画ファイルパス |
-| `temp_audio_path` | str | None | 一時音声ファイルパス |
-| `style` | str | "Neutral" | 感情スタイル |
-| `style_weight` | float | 1.0 | スタイルの強さ |
-| `overlay` | bool | True | 元の音声に重ねる(False=置き換え) |
-| `audio_volume` | float | 1.0 | 生成音声の音量 |
-| `original_volume` | float | 0.3 | 元の音声の音量 |
-
-## 処理フロー
+## 📁 フォルダ構成
 
 ```
-SRTファイル → 解析 → 各字幕ごとにTTS生成 → 話速調整(必要に応じて)
-                                                    ↓
-                                    キュー方式で順次結合(間に合わなければ遅延再生)
-                                                    ↓
-                                              1つのWAVファイルに結合
-                                                    ↓
-                                          全体の時間をチェック
-                                                    ↓
-                                    許容範囲を超えている? → はい → 全体の話速を調整して再生成
-                                                    ↓ いいえ
-                                              元の動画と結合
-                                                    ↓
-                                              吹き替え動画完成
-
-※ 音声の重複や削除は一切なし。超過分は次の音声を遅延(キュー待ち)させて対応。無音期間で相殺。
+Style-Bert-VITS2/
+├── input_mp4/
+│   ├── srt/                    # 字幕ファイル（オプション）
+│   │   └── 動画1.srt
+│   ├── 講座A/
+│   │   ├── 動画1.mp4
+│   │   └── 動画1.srt           # 動画と同じフォルダでもOK
+│   └── 講座B/
+│       └── 動画2.mp4
+├── output_mp4/                 # 出力先（自動作成）
+│   ├── 講座A/
+│   │   └── 動画1.mp4
+│   └── 講座B/
+│       └── 動画2.mp4
+├── model_assets/               # TTSモデル
+│   ├── jvnv-F1-jp/
+│   └── ...
+└── dubbing_tools/              # このツール
 ```
 
-### 話速調整アルゴリズム
+## ⚙️ 設定ファイル (config.ini)
 
-1. **個別調整**: 各字幕の音声が字幕時間より長い場合、length_scaleを0.05ずつ下げて再生成
-2. **全体調整**: 全ての音声を結合した後、動画時間と比較
-3. **許容範囲チェック**: `音声時間 - 動画時間 > tolerance_seconds`なら全体の話速を調整
-4. **段階的調整**: length_scaleを0.1ずつ下げて再生成(最大5回試行)
+```ini
+[paths]
+input_dir = input_mp4
+output_dir = output_mp4
 
-## SRTファイルフォーマット
+[model]
+name = jvnv-F1-jp
+device = cuda
 
-```srt
-1
-00:00:01,000 --> 00:00:03,500
-これは最初の字幕です。
+[audio]
+overlay = true
+audio_volume = 1.0
+original_volume = 0.3
 
-2
-00:00:04,000 --> 00:00:07,200
-2番目の字幕です。
-複数行も対応しています。
-
-3
-00:00:08,000 --> 00:00:10,500
-3番目の字幕です。
+[processing]
+skip_existing = true
 ```
 
-## トラブルシューティング
+## 📋 CLI コマンド一覧
 
-### ffmpegが見つからない
+| コマンド | 説明 |
+|---------|------|
+| `python -m dubbing_tools` | バッチ処理（デフォルト） |
+| `python -m dubbing_tools batch` | バッチ処理 |
+| `python -m dubbing_tools single` | 単一ファイル処理 |
+| `python -m dubbing_tools list` | 処理対象一覧 |
+| `python -m dubbing_tools config` | 設定確認 |
 
-```python
-# ffmpegのフルパスを指定
-dubbing = DubbingAutomation(
-    ...,
-    ffmpeg_path="C:/ffmpeg/bin/ffmpeg.exe",
-)
+### batch オプション
+
+```
+-i, --input         入力フォルダ (default: input_mp4)
+-o, --output        出力フォルダ (default: output_mp4)
+-m, --model         モデル名
+-d, --device        cuda / cpu
+--no-overlay        元音声を置き換え
+--audio-volume      生成音声の音量 (default: 1.0)
+--original-volume   元音声の音量 (default: 0.3)
+-f, --force         既存ファイルを上書き
+-n, --limit         処理件数制限
 ```
 
-### 音声が動画より長すぎる
+### single オプション
 
-- `tolerance_seconds`を大きくする(デフォルト60秒)
-- `min_length_scale`を小さくして最速を上げる(デフォルト0.5=2倍速)
-
-```python
-dubbing = DubbingAutomation(
-    ...,
-    tolerance_seconds=120.0,  # 2分まで許容
-    min_length_scale=0.4,     # 最速2.5倍速
-)
+```
+-v, --video         入力動画ファイル (必須)
+-s, --srt           字幕ファイル (必須)
+-o, --output        出力ファイル (必須)
+-m, --model         モデル名
 ```
 
-### CUDAメモリ不足
+## ✨ 機能
 
-```python
-# CPUモードで実行
-dubbing = DubbingAutomation(
-    ...,
-    device="cpu",
-)
+- **音声カット禁止ポリシー**: 字幕時間に収まらない場合は話速を自動調整
+- **英語→カタカナ変換**: 22万語の辞書による高精度変換
+- **イントロ音声保持**: 最初の字幕まで元音声を残す（フェードアウト付き）
+- **重複スキップ**: 既存ファイルは自動スキップ
+- **文字コード自動検出**: UTF-8, Shift_JIS, CP932 対応
+
+## 📦 ファイル構成
+
 ```
-
-### SRTファイルの解析エラー
-
-- UTF-8エンコーディングで保存されているか確認
-- SRT形式が正しいか確認(番号、タイムスタンプ、テキスト、空行)
-
-## サンプルスクリプト
-
-`examples/dubbing_example.py`に以下のサンプルが含まれています:
-
-1. 基本的な使用例
-2. カスタム設定の例
-3. バッチ処理の例
-4. スタイル違いで複数生成
-
-```bash
-python examples/dubbing_example.py
+dubbing_tools/
+├── __init__.py          # パッケージ初期化
+├── __main__.py          # CLI エントリーポイント
+├── cli.py               # コマンドライン処理
+├── batch.py             # バッチ処理
+├── config.ini           # 設定ファイル
+├── src/
+│   ├── dubbing_automation.py   # メインクラス
+│   ├── srt_parser.py           # SRT解析
+│   ├── audio_generator.py      # 音声生成
+│   ├── video_combiner.py       # 動画結合
+│   ├── text_preprocessor.py    # テキスト前処理
+│   ├── batch_processor.py      # バッチ処理ユーティリティ
+│   └── english_katakana_dict.csv  # 英語→カタカナ辞書
+└── README.md
 ```
-
-## ライセンス
-
-Style-Bert-VITS2のライセンスに従います。
-
-## 注意事項
-
-- 生成された音声の著作権は元のテキストと音声モデルの権利者に帰属します
-- 商用利用する場合は関連する権利を確認してください
-- ffmpegのライセンス(LGPL/GPL)に注意してください
