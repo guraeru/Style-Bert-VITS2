@@ -180,25 +180,27 @@ class DubbingAutomation:
                 intro_duration=intro_duration,
             )
             
-            # ステップ6: SRTファイルをUTF-8 BOM付きで出力先にコピー
+            # ステップ6: SRTファイルを元のエンコーディングのままコピー
             output_srt_path = str(Path(output_path).with_suffix('.srt'))
             try:
                 # 元のSRTファイルを読み込み（エンコーディング自動検出）
                 encodings = ['utf-8-sig', 'utf-8', 'shift_jis', 'cp932']
                 srt_content = None
+                used_encoding = None
                 for encoding in encodings:
                     try:
                         with open(srt_path, 'r', encoding=encoding) as f:
                             srt_content = f.read()
+                        used_encoding = encoding
                         break
                     except (UnicodeDecodeError, LookupError):
                         continue
                 
-                if srt_content:
-                    # UTF-8 BOM付きで保存（Windowsメディアプレイヤー対応）
-                    with open(output_srt_path, 'w', encoding='utf-8-sig') as f:
+                if srt_content and used_encoding:
+                    # 元のエンコーディングのままで保存
+                    with open(output_srt_path, 'w', encoding=used_encoding) as f:
                         f.write(srt_content)
-                    print(f"字幕ファイルをコピー（UTF-8 BOM付き）: {output_srt_path}")
+                    print(f"字幕ファイルをコピー（{used_encoding}）: {output_srt_path}")
                 else:
                     # フォールバック: 単純コピー
                     import shutil
