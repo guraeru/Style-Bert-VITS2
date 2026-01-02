@@ -97,7 +97,7 @@ class DubbingAutomation:
         temp_audio_path: Optional[str] = None,
         style: str = "Neutral",
         style_weight: float = 1.0,
-        overlay: bool = True,
+        overlay: bool = False,
         audio_volume: float = 1.0,
         original_volume: float = 0.3,
         intro_only: bool = False,
@@ -112,7 +112,7 @@ class DubbingAutomation:
             temp_audio_path: 一時音声ファイルパス(Noneなら自動生成)
             style: 感情スタイル
             style_weight: スタイルの強さ
-            overlay: Trueなら元の音声に重ねる、Falseなら置き換える
+            overlay: Trueなら元の音声に重ねる、Falseなら置き換える（デフォルト: 置き替え）
             audio_volume: 生成音声の音量
             original_volume: 元の音声の音量(overlayがTrueの場合のみ)
             intro_only: Trueならイントロ部分(最初の字幕開始まで)のみ元の音声を重ねる

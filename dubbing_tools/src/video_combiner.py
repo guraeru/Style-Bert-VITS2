@@ -30,7 +30,7 @@ class VideoCombiner:
         video_path: str,
         audio_path: str,
         output_path: str,
-        overlay: bool = True,
+        overlay: bool = False,
         audio_volume: float = 1.0,
         original_volume: float = 0.3,
         intro_duration: float = 0.0,
@@ -47,7 +47,7 @@ class VideoCombiner:
             video_path: 元の動画ファイルパス
             audio_path: 生成した音声ファイルパス(WAV)
             output_path: 出力動画ファイルパス
-            overlay: Trueなら元の音声に重ねる、Falseなら置き換える
+            overlay: Trueなら元の音声に重ねる、Falseなら置き換える（デフォルト: 置き替え）
             audio_volume: 生成音声の音量(0.0~1.0以上)
             original_volume: 元の音声の音量(0.0~1.0以上、overlayがTrueの場合のみ)
             intro_duration: イントロの長さ(秒)。この時間までは元の音声を重ね、以降は生成音声のみ
