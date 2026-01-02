@@ -202,7 +202,7 @@ def main():
             output_dir=str(output_dir),
             recursive=True,
             preserve_structure=True,
-            suffix="_dubbed",
+            suffix="",
             skip_existing=config["skip_existing"],
         )
     except Exception as e:
