@@ -107,7 +107,7 @@ class SRTParser:
                 index=int(index_str),
                 start_time=cls.parse_time(start_str),
                 end_time=cls.parse_time(end_str),
-                text=text.strip()
+                text=text.rstrip('\n')  # 末尾の改行のみ削除、内部の空行は保持
             )
             entries.append(entry)
         
