@@ -8,6 +8,7 @@
 """
 
 import sys
+import re
 import configparser
 import os
 from pathlib import Path
@@ -26,6 +27,43 @@ logger.add(
     level="INFO",
     colorize=True,
 )
+
+
+def is_series_start(filename: str) -> bool:
+    """
+    ファイル名がシリーズの開始かどうかを判定
+    
+    開始ファイル:
+      - 001, 01-1, 1, 1-1, 2-1 など
+      
+    続編（除外）:
+      - 01-2, 02-2, 1-2, 2-2 など
+      
+    Args:
+        filename: ファイル名（拡張子なし）
+        
+    Returns:
+        シリーズ開始ならTrue
+    """
+    # ファイル名の先頭部分を抽出（最初の数字と記号まで）
+    match = re.match(r'^(\d+)(?:-(\d+))?', filename)
+    if not match:
+        return False
+    
+    section_num = int(match.group(1))
+    part_num = int(match.group(2)) if match.group(2) else None
+    
+    # パターン判定
+    # 1. 単独の数字が1,2,3...の場合（新しいセクション開始）
+    if part_num is None:
+        return True
+    
+    # 2. "N-1"パターン（セクションNの第1部）
+    if part_num == 1:
+        return True
+    
+    # 3. その他（N-2, N-3等）は続編なのでFalse
+    return False
 
 
 def get_available_models():
@@ -211,7 +249,19 @@ def main():
         zip(video_paths, srt_paths, output_paths), 1
     ):
         video_name = Path(video_path).name
+        filename_without_ext = Path(video_path).stem
         print(f"[{i}/{len(video_paths)}] {video_name}")
+        
+        # ファイル名がシリーズ開始かどうかを判定
+        is_start = is_series_start(filename_without_ext)
+        overlay = config["overlay"]
+        intro_duration = 0.0
+        
+        # シリーズ開始の場合、冒頭5秒のみ音声を重ねる
+        if is_start:
+            overlay = True
+            intro_duration = 5.0
+            print(f"  📝 シリーズ開始ファイル - 冒頭5秒のみ元音声を重ねます")
         
         try:
             Path(output_path).parent.mkdir(parents=True, exist_ok=True)
@@ -220,9 +270,10 @@ def main():
                 video_path=video_path,
                 srt_path=srt_path,
                 output_path=output_path,
-                overlay=config["overlay"],
+                overlay=overlay,
                 audio_volume=config["audio_volume"],
                 original_volume=config["original_volume"],
+                intro_only=is_start,
             )
             
             completed += 1

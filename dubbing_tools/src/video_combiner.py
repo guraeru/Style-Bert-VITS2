@@ -72,12 +72,13 @@ class VideoCombiner:
         
         # ffmpegコマンド構築
         if overlay and intro_duration > 0:
-            # イントロ部分のみ元の音声を重ね、それ以降は生成音声のみ
-            # シンプルな方法: イントロ部分で元の音声をフェードアウト
+            # イントロ部分のみ元の音声を重ね、その後は生成音声のみに切り替え
+            # afadeで元の音声をフェードアウトし、吹き替え音声のみになる
             filter_complex = (
                 f"[0:a]volume={original_volume},"
-                f"afade=t=out:st={intro_duration}:d=0.5[orig];"
-                f"[1:a]volume={audio_volume}[gen];"
+                f"afade=t=out:st={intro_duration}:d=0.1[orig];"
+                f"[1:a]volume={audio_volume},"
+                f"adelay=delays={int(intro_duration*1000)}ms:all=1[gen];"
                 f"[orig][gen]amix=inputs=2:duration=longest[aout]"
             )
             
