@@ -254,6 +254,7 @@ class AsyncIOManager:
     def _download_worker(self):
         """ダウンロードワーカースレッド"""
         while self.download_active:
+            task = None
             try:
                 task = self.download_queue.get(timeout=1.0)
                 if task is None:  # 終了シグナル
@@ -282,10 +283,13 @@ class AsyncIOManager:
                 continue
             except Exception as e:
                 logger.error(f"Download worker error: {e}")
+                if task is not None:
+                    self.download_queue.task_done()
     
     def _upload_worker(self):
         """アップロードワーカースレッド"""
         while self.upload_active:
+            task = None
             try:
                 task = self.upload_queue.get(timeout=1.0)
                 if task is None:  # 終了シグナル
@@ -307,6 +311,8 @@ class AsyncIOManager:
                 continue
             except Exception as e:
                 logger.error(f"Upload worker error: {e}")
+                if task is not None:
+                    self.upload_queue.task_done()
     
     def _download_files(self, task: DownloadTask):
         """
