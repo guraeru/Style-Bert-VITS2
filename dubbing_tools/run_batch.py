@@ -131,6 +131,9 @@ def load_config():
         "audio_volume": 1.0,
         "original_volume": 0.3,
         "skip_existing": True,
+        "enable_async_io": True,
+        "download_pool_size": 3,
+        "max_upload_threads": 2,
     }
     
     if not config_path.exists():
@@ -158,6 +161,12 @@ def load_config():
     # [processing]
     if config.has_section("processing"):
         settings["skip_existing"] = config.getboolean("processing", "skip_existing", fallback=settings["skip_existing"])
+    
+    # [async_io] - 新規追加
+    if config.has_section("async_io"):
+        settings["enable_async_io"] = config.getboolean("async_io", "enable", fallback=settings["enable_async_io"])
+        settings["download_pool_size"] = config.getint("async_io", "download_pool_size", fallback=settings["download_pool_size"])
+        settings["max_upload_threads"] = config.getint("async_io", "max_upload_threads", fallback=settings["max_upload_threads"])
     
     return settings
 
@@ -344,16 +353,37 @@ def main():
     print("\n🎬 処理開始...\n")
     print("💡 Ctrl+C で中断しても、次回続きから再開できます\n")
     
+    # 非同期IOマネージャーの初期化
+    from dubbing_tools.src.async_io_manager import AsyncIOManager
+    
+    async_io = None
+    use_async_io = config.get("enable_async_io", True)
+    
+    if use_async_io:
+        temp_dir = output_dir / ".temp_processing"
+        async_io = AsyncIOManager(
+            temp_dir=str(temp_dir),
+            download_pool_size=config.get("download_pool_size", 3),
+            max_upload_threads=config.get("max_upload_threads", 2),
+            enable_async=True,
+        )
+        async_io.start()
+        
+        # ダウンロードタスクをキューに追加
+        async_io.enqueue_downloads(video_paths, srt_paths)
+        print(f"📥 非同期IO有効: ダウンロードプールサイズ={config.get('download_pool_size', 3)}, "
+              f"アップロードスレッド数={config.get('max_upload_threads', 2)}\n")
+    
     completed = 0
     failed = 0
     total = len(video_paths)
     
     try:
-        for i, (video_path, srt_path, output_path) in enumerate(
+        for i, (video_path_orig, srt_path_orig, output_path) in enumerate(
             zip(video_paths, srt_paths, output_paths), 1
         ):
-            video_name = Path(video_path).name
-            filename_without_ext = Path(video_path).stem
+            video_name = Path(video_path_orig).name
+            filename_without_ext = Path(video_path_orig).stem
             print(f"[{i}/{total}] {video_name}")
             
             # 処理中としてマーク
@@ -373,17 +403,38 @@ def main():
                 print(f"  📝 続編ファイル - 冒頭音声をスキップします")
             
             try:
+                # 非同期IOを使用する場合はダウンロード完了を待つ
+                if use_async_io:
+                    video_path, srt_path = async_io.get_downloaded_files(i - 1)
+                    print(f"  📥 ダウンロード完了")
+                else:
+                    video_path = video_path_orig
+                    srt_path = srt_path_orig
+                
                 Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+                
+                # 一時出力パスを使用（非同期アップロード用）
+                if use_async_io:
+                    temp_output = str(Path(output_path).parent / f".temp_{Path(output_path).name}")
+                else:
+                    temp_output = output_path
                 
                 automation.create_dubbed_video(
                     video_path=video_path,
                     srt_path=srt_path,
-                    output_path=output_path,
+                    output_path=temp_output,
                     overlay=overlay,
                     audio_volume=config["audio_volume"],
                     original_volume=config["original_volume"],
                     intro_duration=intro_duration,
                 )
+                
+                # 非同期アップロード
+                if use_async_io:
+                    # アップロードタスクをキューに追加し、処理を続行
+                    cleanup_paths = [video_path, srt_path, temp_output]
+                    async_io.enqueue_upload(temp_output, output_path, cleanup_paths)
+                    print(f"  📤 アップロード中（バックグラウンド）")
                 
                 # 完了としてマーク
                 progress_manager.mark_completed(output_path)
@@ -401,8 +452,18 @@ def main():
     except KeyboardInterrupt:
         print("\n\n⚠️ 処理が中断されました")
         print("💡 進捗は保存されています。次回起動時に続きから再開できます。")
+        if async_io:
+            print("📤 アップロード完了を待機中...")
+            async_io.stop(wait_uploads=True)
+            async_io.cleanup_temp_dir()
         progress_manager.print_summary()
         return 1
+    finally:
+        # 非同期IOを停止
+        if async_io:
+            print("\n📤 残りのアップロードを完了中...")
+            async_io.stop(wait_uploads=True)
+            async_io.cleanup_temp_dir()
     
     # 結果表示
     print("=" * 60)
