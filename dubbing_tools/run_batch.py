@@ -379,9 +379,10 @@ def main():
     total = len(video_paths)
     
     try:
-        for i, (video_path_orig, srt_path_orig, output_path) in enumerate(
-            zip(video_paths, srt_paths, output_paths), 1
+        for idx, (video_path_orig, srt_path_orig, output_path) in enumerate(
+            zip(video_paths, srt_paths, output_paths)
         ):
+            i = idx + 1  # 1-based for display
             video_name = Path(video_path_orig).name
             filename_without_ext = Path(video_path_orig).stem
             print(f"[{i}/{total}] {video_name}")
@@ -405,7 +406,7 @@ def main():
             try:
                 # 非同期IOを使用する場合はダウンロード完了を待つ
                 if use_async_io:
-                    video_path, srt_path = async_io.get_downloaded_files(i - 1)
+                    video_path, srt_path = async_io.get_downloaded_files(idx)
                     print(f"  📥 ダウンロード完了")
                 else:
                     video_path = video_path_orig

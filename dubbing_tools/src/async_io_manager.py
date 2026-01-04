@@ -105,12 +105,13 @@ class AsyncIOManager:
         logger.info(f"Started {len(self.download_threads)} download threads and "
                    f"{len(self.upload_threads)} upload threads")
     
-    def stop(self, wait_uploads: bool = True):
+    def stop(self, wait_uploads: bool = True, timeout: float = 30.0):
         """
         非同期処理を停止
         
         Args:
             wait_uploads: アップロード完了を待つか
+            timeout: アップロード待機のタイムアウト（秒）
         """
         if not self.enable_async:
             return
@@ -119,22 +120,33 @@ class AsyncIOManager:
         self.download_active = False
         self.download_queue.put(None)  # 終了シグナル
         
-        # アップロード停止
-        self.upload_active = False
-        if wait_uploads:
-            # 全アップロードが完了するまで待つ
-            self.upload_queue.join()
-        
-        # 終了シグナルを全スレッドに送信
+        # 終了シグナルを全アップロードスレッドに送信
         for _ in range(len(self.upload_threads)):
             self.upload_queue.put(None)
         
-        # スレッド終了待機
+        # アップロード停止
+        self.upload_active = False
+        if wait_uploads:
+            # 全アップロードが完了するまで待つ（タイムアウト付き）
+            import time
+            start_time = time.time()
+            while self.upload_queue.unfinished_tasks > 0:
+                if time.time() - start_time > timeout:
+                    logger.warning(f"Upload queue join timed out after {timeout}s")
+                    break
+                time.sleep(0.1)
+        
+        # スレッド終了待機（タイムアウト付き）
+        join_timeout = 5.0
         for thread in self.download_threads:
-            thread.join(timeout=5.0)
+            thread.join(timeout=join_timeout)
+            if thread.is_alive():
+                logger.warning(f"Download thread did not terminate within {join_timeout}s")
         
         for thread in self.upload_threads:
-            thread.join(timeout=5.0)
+            thread.join(timeout=join_timeout)
+            if thread.is_alive():
+                logger.warning(f"Upload thread did not terminate within {join_timeout}s")
         
         logger.info("AsyncIOManager stopped")
         
@@ -245,6 +257,7 @@ class AsyncIOManager:
             try:
                 task = self.download_queue.get(timeout=1.0)
                 if task is None:  # 終了シグナル
+                    self.download_queue.task_done()
                     break
                 
                 # ダウンロード実行
@@ -262,6 +275,8 @@ class AsyncIOManager:
                     logger.error(f"Download failed for index {task.index}: {e}")
                     with self.download_lock:
                         self.download_results[task.index] = (None, None, str(e))
+                
+                self.download_queue.task_done()
                 
             except queue.Empty:
                 continue
