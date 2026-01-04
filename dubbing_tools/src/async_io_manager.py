@@ -120,21 +120,27 @@ class AsyncIOManager:
         self.download_active = False
         self.download_queue.put(None)  # 終了シグナル
         
+        # アップロード停止（シグナル送信前にフラグをクリア）
+        self.upload_active = False
+        
+        if wait_uploads:
+            # 全アップロードが完了するまで待つ（タイムアウト付きqueue.join使用）
+            import time
+            from threading import Thread
+            
+            def join_with_timeout():
+                self.upload_queue.join()
+            
+            join_thread = Thread(target=join_with_timeout, daemon=True)
+            join_thread.start()
+            join_thread.join(timeout=timeout)
+            
+            if join_thread.is_alive():
+                logger.warning(f"Upload queue join timed out after {timeout}s")
+        
         # 終了シグナルを全アップロードスレッドに送信
         for _ in range(len(self.upload_threads)):
             self.upload_queue.put(None)
-        
-        # アップロード停止
-        self.upload_active = False
-        if wait_uploads:
-            # 全アップロードが完了するまで待つ（タイムアウト付き）
-            import time
-            start_time = time.time()
-            while self.upload_queue.unfinished_tasks > 0:
-                if time.time() - start_time > timeout:
-                    logger.warning(f"Upload queue join timed out after {timeout}s")
-                    break
-                time.sleep(0.1)
         
         # スレッド終了待機（タイムアウト付き）
         join_timeout = 5.0
