@@ -73,11 +73,12 @@ class VideoCombiner:
         # ffmpegコマンド構築
         if overlay and intro_duration > 0:
             # イントロ部分のみ元の音声を使い、以降は生成音声に置き換え
-            # 元の音声をフェードアウト、生成音声をフェードインで自然に切り替え
-            fade_duration = 0.2  # フェード時間（秒）
+            # intro_durationの時点で完全に切り替わるよう、その前からフェードアウト開始
+            fade_duration = 0.5  # フェード時間（秒）
+            fade_start = max(0, intro_duration - fade_duration)  # 5秒で完了するため4.5秒から開始
             filter_complex = (
-                f"[0:a]afade=t=out:st={intro_duration}:d={fade_duration}[orig];"
-                f"[1:a]afade=t=in:st={intro_duration}:d={fade_duration},"
+                f"[0:a]afade=t=out:st={fade_start}:d={fade_duration}[orig];"
+                f"[1:a]afade=t=in:st={fade_start}:d={fade_duration},"
                 f"volume={audio_volume}[gen];"
                 f"[orig][gen]amix=inputs=2:duration=longest[aout]"
             )
