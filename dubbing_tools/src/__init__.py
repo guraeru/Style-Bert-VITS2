@@ -17,6 +17,12 @@ from .batch_processor import (
     filter_existing_outputs,
     group_pairs_by_directory,
 )
+from .progress_manager import (
+    ProgressManager,
+    ProcessingStatus,
+    FileProgress,
+    BatchProgress,
+)
 
 __all__ = [
     "DubbingAutomation",
@@ -32,4 +38,8 @@ __all__ = [
     "create_batch_from_directory",
     "filter_existing_outputs",
     "group_pairs_by_directory",
+    "ProgressManager",
+    "ProcessingStatus",
+    "FileProgress",
+    "BatchProgress",
 ]

@@ -5,6 +5,7 @@
     python dubbing_tools/run_batch.py
     
 話者を選択式で選んで一括処理を開始します。
+中断しても .dubbing_progress.json を使って続きから再開できます。
 """
 
 import sys
@@ -18,6 +19,9 @@ from loguru import logger
 PROJECT_ROOT = Path(__file__).parent.parent
 DUBBING_TOOLS_DIR = Path(__file__).parent
 sys.path.insert(0, str(PROJECT_ROOT))
+
+# 進捗管理モジュール
+from dubbing_tools.src.progress_manager import ProgressManager, ProcessingStatus
 
 # ===== ロギング設定 =====
 logger.remove()
@@ -158,23 +162,64 @@ def load_config():
     return settings
 
 
+def ask_resume_or_new(progress_manager: ProgressManager) -> str:
+    """
+    既存の進捗がある場合、再開するか新規開始するか確認
+    
+    Returns:
+        "resume": 再開
+        "new": 新規開始
+        "cancel": キャンセル
+    """
+    info = progress_manager.get_resumable_info()
+    
+    print("\n" + "=" * 60)
+    print("📂 前回の処理が中断されています")
+    print("=" * 60)
+    print(f"   セッションID: {info['session_id']}")
+    print(f"   モデル: {info['model_name']}")
+    print(f"   開始日時: {info['created_at']}")
+    print(f"   合計: {info['total']}件")
+    print(f"   完了: {info['completed']}件")
+    print(f"   失敗: {info['failed']}件")
+    print(f"   残り: {info['pending']}件")
+    print()
+    
+    while True:
+        print("どうしますか？")
+        print("  [1] 続きから再開する")
+        print("  [2] 最初からやり直す（進捗をクリア）")
+        print("  [3] キャンセル")
+        print()
+        
+        try:
+            choice = input("番号を入力 > ").strip()
+            if choice == "1":
+                return "resume"
+            elif choice == "2":
+                confirm = input("本当に進捗をクリアしますか？ [y/N] > ").strip().lower()
+                if confirm == 'y':
+                    progress_manager.clear_progress()
+                    return "new"
+                else:
+                    continue
+            elif choice == "3":
+                return "cancel"
+            else:
+                print("❌ 1, 2, 3 のいずれかを入力してください。")
+        except KeyboardInterrupt:
+            print("\n\nキャンセルしました。")
+            return "cancel"
+
+
 def main():
     print("\n" + "=" * 60)
     print("🎬 Style-Bert-VITS2 吹き替えバッチ処理")
+    print("   (中断しても続きから再開できます)")
     print("=" * 60)
-    
-    # 利用可能なモデルを取得
-    models = get_available_models()
-    if not models:
-        print("❌ model_assets/ にモデルが見つかりません。")
-        return 1
-    
-    # 話者を選択
-    model_name = select_model(models)
     
     # 設定を読み込む
     config = load_config()
-    config["model_name"] = model_name  # 選択したモデルで上書き
     
     # 相対パスを絶対パスに変換
     input_dir = Path(config["input_dir"])
@@ -185,6 +230,41 @@ def main():
     if not output_dir.is_absolute():
         output_dir = PROJECT_ROOT / output_dir
     
+    # 進捗管理の初期化
+    progress_manager = ProgressManager(str(output_dir))
+    
+    # 既存の進捗があるか確認
+    resume_mode = False
+    if progress_manager.has_existing_progress():
+        progress_manager.load_progress()
+        pending = progress_manager.get_pending_files()
+        
+        if pending:
+            choice = ask_resume_or_new(progress_manager)
+            if choice == "cancel":
+                return 0
+            elif choice == "resume":
+                resume_mode = True
+                # 前回のモデル名を使用
+                config["model_name"] = progress_manager.progress.model_name
+                print(f"\n✅ 前回のセッションから再開します（モデル: {config['model_name']}）\n")
+        else:
+            # 全て完了済み、進捗をクリア
+            print("前回の処理は全て完了しています。新規処理を開始します。")
+            progress_manager.clear_progress()
+    
+    # 再開モードでなければモデルを選択
+    if not resume_mode:
+        # 利用可能なモデルを取得
+        models = get_available_models()
+        if not models:
+            print("❌ model_assets/ にモデルが見つかりません。")
+            return 1
+        
+        # 話者を選択
+        model_name = select_model(models)
+        config["model_name"] = model_name
+    
     print("📋 設定:")
     print(f"   話者: {config['model_name']}")
     print(f"   入力: {input_dir}")
@@ -192,28 +272,47 @@ def main():
     print(f"   デバイス: {config['device']}")
     print()
     
-    # ファイルペアを検出
+    # ファイルペアを検出（再開モードでない場合のみ）
     from dubbing_tools.src.batch_processor import create_batch_from_directory
     
-    print("📂 ファイルを検索中...")
-    try:
-        video_paths, srt_paths, output_paths = create_batch_from_directory(
+    if resume_mode:
+        # 再開モード: 進捗ファイルから未処理のファイルを取得
+        pending_files = progress_manager.get_pending_files()
+        video_paths = [f.video_path for f in pending_files]
+        srt_paths = [f.srt_path for f in pending_files]
+        output_paths = [f.output_path for f in pending_files]
+        
+        print(f"📂 残り {len(video_paths)}件 を処理します\n")
+    else:
+        # 新規モード: ファイルを検索
+        print("📂 ファイルを検索中...")
+        try:
+            video_paths, srt_paths, output_paths = create_batch_from_directory(
+                input_dir=str(input_dir),
+                output_dir=str(output_dir),
+                recursive=True,
+                preserve_structure=True,
+                suffix="",
+                skip_existing=config["skip_existing"],
+            )
+        except Exception as e:
+            print(f"❌ エラー: {e}")
+            return 1
+        
+        if not video_paths:
+            print("❌ 処理対象のファイルがありません。")
+            return 1
+        
+        print(f"   検出: {len(video_paths)}件\n")
+        
+        # 新しいセッションを作成
+        progress_manager.create_new_session(
+            model_name=config["model_name"],
             input_dir=str(input_dir),
-            output_dir=str(output_dir),
-            recursive=True,
-            preserve_structure=True,
-            suffix="",
-            skip_existing=config["skip_existing"],
+            video_paths=video_paths,
+            srt_paths=srt_paths,
+            output_paths=output_paths,
         )
-    except Exception as e:
-        print(f"❌ エラー: {e}")
-        return 1
-    
-    if not video_paths:
-        print("❌ 処理対象のファイルがありません。")
-        return 1
-    
-    print(f"   検出: {len(video_paths)}件\n")
     
     # 確認
     print("処理を開始しますか？ [Y/n] ", end="")
@@ -221,9 +320,11 @@ def main():
         answer = input().strip().lower()
         if answer and answer != 'y':
             print("キャンセルしました。")
+            print("💡 進捗は保存されています。次回起動時に再開できます。")
             return 0
     except KeyboardInterrupt:
         print("\nキャンセルしました。")
+        print("💡 進捗は保存されています。次回起動時に再開できます。")
         return 0
     
     # モデルを初期化
@@ -241,60 +342,85 @@ def main():
     
     # 一括処理実行
     print("\n🎬 処理開始...\n")
+    print("💡 Ctrl+C で中断しても、次回続きから再開できます\n")
     
     completed = 0
     failed = 0
+    total = len(video_paths)
     
-    for i, (video_path, srt_path, output_path) in enumerate(
-        zip(video_paths, srt_paths, output_paths), 1
-    ):
-        video_name = Path(video_path).name
-        filename_without_ext = Path(video_path).stem
-        print(f"[{i}/{len(video_paths)}] {video_name}")
-        
-        # ファイル名が続編（xx-2以上）かどうかを判定
-        is_sequel = is_continuation(filename_without_ext)
-        overlay = config["overlay"]
-        intro_duration = 0.0
-        include_intro = not is_sequel  # 続編でなければ冒頭音声を入れる
-        
-        # 続編でない場合、冒頭5秒のみ元音声を重ねる（標準動作）
-        if include_intro:
-            overlay = True
-            intro_duration = 5.0
-            print(f"  📝 冒頭5秒のみ元音声を重ねます")
-        else:
-            print(f"  📝 続編ファイル - 冒頭音声をスキップします")
-        
-        try:
-            Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    try:
+        for i, (video_path, srt_path, output_path) in enumerate(
+            zip(video_paths, srt_paths, output_paths), 1
+        ):
+            video_name = Path(video_path).name
+            filename_without_ext = Path(video_path).stem
+            print(f"[{i}/{total}] {video_name}")
             
-            automation.create_dubbed_video(
-                video_path=video_path,
-                srt_path=srt_path,
-                output_path=output_path,
-                overlay=overlay,
-                audio_volume=config["audio_volume"],
-                original_volume=config["original_volume"],
-                intro_only=include_intro,
-            )
+            # 処理中としてマーク
+            progress_manager.mark_in_progress(output_path)
             
-            completed += 1
-            print(f"  ✅ 完了\n")
+            # ファイル名が続編（xx-2以上）かどうかを判定
+            is_sequel = is_continuation(filename_without_ext)
+            overlay = config["overlay"]
+            intro_duration = 0.0
             
-        except Exception as e:
-            failed += 1
-            logger.error(f"処理エラー: {video_name}", exc_info=True)
-            print(f"  ❌ エラー: {e}\n")
-            continue
+            # 続編でない場合、冒頭5秒のみ元音声を重ねる（標準動作）
+            if not is_sequel:
+                overlay = True
+                intro_duration = 5.0
+                print(f"  📝 冒頭5秒のみ元音声を重ねます")
+            else:
+                print(f"  📝 続編ファイル - 冒頭音声をスキップします")
+            
+            try:
+                Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+                
+                automation.create_dubbed_video(
+                    video_path=video_path,
+                    srt_path=srt_path,
+                    output_path=output_path,
+                    overlay=overlay,
+                    audio_volume=config["audio_volume"],
+                    original_volume=config["original_volume"],
+                    intro_duration=intro_duration,
+                )
+                
+                # 完了としてマーク
+                progress_manager.mark_completed(output_path)
+                completed += 1
+                print(f"  ✅ 完了\n")
+                
+            except Exception as e:
+                # 失敗としてマーク
+                progress_manager.mark_failed(output_path, str(e))
+                failed += 1
+                logger.error(f"処理エラー: {video_name}", exc_info=True)
+                print(f"  ❌ エラー: {e}\n")
+                continue
+                
+    except KeyboardInterrupt:
+        print("\n\n⚠️ 処理が中断されました")
+        print("💡 進捗は保存されています。次回起動時に続きから再開できます。")
+        progress_manager.print_summary()
+        return 1
     
     # 結果表示
     print("=" * 60)
-    print(f"📊 結果: 成功 {completed} / 失敗 {failed} / 合計 {len(video_paths)}")
+    print(f"📊 結果: 成功 {completed} / 失敗 {failed} / 合計 {total}")
     print("=" * 60)
     
     if completed > 0:
         print(f"\n✅ 出力先: {output_dir}")
+    
+    # 全て完了したら進捗ファイルを削除
+    if failed == 0 and completed == total:
+        progress_manager.clear_progress()
+        print("✅ 全ての処理が完了しました！")
+    else:
+        progress_manager.print_summary()
+        if failed > 0:
+            print("\n💡 失敗したファイルは次回起動時にスキップされます。")
+            print("   再処理するには進捗をクリアしてください。")
     
     return 0 if failed == 0 else 1
 
