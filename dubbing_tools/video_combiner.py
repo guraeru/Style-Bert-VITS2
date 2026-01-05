@@ -38,10 +38,9 @@ class VideoCombiner:
         """
         動画と音声を結合
         
-        元のコードのcombine_audio()を参考に実装。
         ffmpegでエンコードなしに動画ストリームをコピーし、音声のみ結合します。
         
-        イントロ部分のみ元の音声を重ね、それ以降は生成音声のみにします。
+        冒頭の指定時間のみ元音声を重ね、以降は吹き替え音声のみにできます。
         
         Args:
             video_path: 元の動画ファイルパス
@@ -50,7 +49,7 @@ class VideoCombiner:
             overlay: Trueなら元の音声に重ねる、Falseなら置き換える
             audio_volume: 生成音声の音量(0.0~1.0以上)
             original_volume: 元の音声の音量(0.0~1.0以上、overlayがTrueの場合のみ)
-            intro_duration: イントロの長さ(秒)。この時間までは元の音声を重ね、以降は生成音声のみ
+            intro_duration: 冒頭で元音声を重ねる時間(秒)。この時間までは元の音声とミックス、以降は吹き替えのみ
             
         Returns:
             成功したらTrue
@@ -72,10 +71,10 @@ class VideoCombiner:
         
         # ffmpegコマンド構築
         if overlay and intro_duration > 0:
-            # イントロ部分のみ元の音声を使い、以降は生成音声に置き換え
+            # 冒頭の指定時間のみ元音声を重ね、以降は吹き替え音声のみ
             # intro_durationの時点で完全に切り替わるよう、その前からフェードアウト開始
             fade_duration = 0.5  # フェード時間（秒）
-            fade_start = max(0, intro_duration - fade_duration)  # 5秒で完了するため4.5秒から開始
+            fade_start = max(0, intro_duration - fade_duration)
             filter_complex = (
                 f"[0:a]afade=t=out:st={fade_start}:d={fade_duration}[orig];"
                 f"[1:a]afade=t=in:st={fade_start}:d={fade_duration},"
@@ -91,7 +90,7 @@ class VideoCombiner:
                 f'-y "{output_path}"'
             )
         elif overlay:
-            # 全体で元の音声に重ねる（従来の動作）
+            # 全体で元の音声に吹き替え音声を重ねる
             filter_complex = (
                 f"[0:a]volume={original_volume}[a1];"
                 f"[1:a]volume={audio_volume}[a2];"
@@ -106,7 +105,7 @@ class VideoCombiner:
                 f'-y "{output_path}"'
             )
         else:
-            # 音声を置き換え（元のコードと同じロジック）
+            # 元の動画音声を完全に削除し、吹き替え音声のみを使用
             cmd = (
                 f'"{self.ffmpeg_path}" -i "{video_path}" -i "{audio_path}" '
                 f'-c:v copy -c:a aac '

@@ -183,13 +183,17 @@ class AudioGenerator:
         current_time = 0.0  # 実際の音声再生時刻(遅延を考慮)
         length_scale = self.initial_length_scale
         
-        for entry in entries:
+        for i, entry in enumerate(entries):
             # 前の字幕からのギャップを無音で埋める
-            # ただし、前の音声が超過していた場合は無音なし(キュー方式)
-            if entry.start_time > current_time:
+            # ただし、最初の字幕の前には無音を挿入しない（SRT通りに開始）
+            # また、前の音声が超過していた場合も無音なし(キュー方式)
+            if i > 0 and entry.start_time > current_time:
                 silence_duration = entry.start_time - current_time
                 silence = self.generate_silence(silence_duration)
                 all_audio.append(silence)
+                current_time = entry.start_time
+            elif i == 0:
+                # 最初の字幕は開始時刻から生成開始
                 current_time = entry.start_time
             # else: current_time >= entry.start_time の場合
             #       → 前の音声が超過しているので、キューに入り無音なしで次の音声を続ける

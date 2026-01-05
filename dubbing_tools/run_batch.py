@@ -364,13 +364,15 @@ def main():
             overlay = config["overlay"]
             intro_duration = 0.0
             
-            # 続編でない場合、冒頭5秒のみ元音声を重ねる（標準動作）
+            # 開始ファイル（1-1、02-1など）の場合、冒頭5秒のみ元音声を重ねる
             if not is_sequel:
                 overlay = True
                 intro_duration = 5.0
-                print(f"  📝 冒頭5秒のみ元音声を重ねます")
+                print(f"  📝 冒頭5秒のみ元音声と吹き替え音声をミックスします")
             else:
-                print(f"  📝 続編ファイル - 冒頭音声をスキップします")
+                # 続編ファイル（1-2、02-2など）は吹き替え音声のみ
+                overlay = False
+                print(f"  📝 吹き替え音声のみを使用します（元音声なし）")
             
             try:
                 Path(output_path).parent.mkdir(parents=True, exist_ok=True)

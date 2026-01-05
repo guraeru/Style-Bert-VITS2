@@ -96,7 +96,7 @@ class DubbingAutomation:
         overlay: bool = True,
         audio_volume: float = 1.0,
         original_volume: float = 0.3,
-        intro_only: bool = False,
+        intro_duration: float = 0.0,
     ) -> bool:
         """
         吹き替え動画を作成
@@ -111,7 +111,7 @@ class DubbingAutomation:
             overlay: Trueなら元の音声に重ねる、Falseなら置き換える
             audio_volume: 生成音声の音量
             original_volume: 元の音声の音量(overlayがTrueの場合のみ)
-            intro_only: Trueならイントロ部分(最初の字幕開始まで)のみ元の音声を重ねる
+            intro_duration: 冒頭で元音声を重ねる時間(秒)。この時間までは元の音声とミックス
             
         Returns:
             成功したらTrue
@@ -159,12 +159,6 @@ class DubbingAutomation:
             
             # ステップ5: 動画と音声を結合
             print(f"動画と音声を結合中...")
-            
-            # イントロ部分のみ元の音声を重ねる場合、最初の字幕開始時刻を取得
-            intro_duration = 0.0
-            if intro_only and overlay and len(entries) > 0:
-                intro_duration = entries[0].start_time
-                print(f"イントロ部分のみ元の音声を重ねます(0秒 ~ {intro_duration:.2f}秒)")
             
             self.video_combiner.combine_audio(
                 video_path=video_path,
