@@ -15,28 +15,53 @@ from dataclasses import dataclass
 class VideoSRTPair:
     """動画とSRTファイルのペア"""
     video_path: str
-    srt_path: str
+    srt_path: str  # コピーのみの場合は空文字列
     relative_path: str  # 入力ルートからの相対パス（出力先決定用）
+    copy_only: bool = False  # Trueの場合、吹き替えせずそのままコピー
     
     def __repr__(self):
-        return f"VideoSRTPair({Path(self.video_path).name})"
+        label = "copy" if self.copy_only else "dub"
+        return f"VideoSRTPair({Path(self.video_path).name}, {label})"
+
+
+def _get_dirs_with_srt(input_path: Path, recursive: bool) -> set:
+    """
+    SRTファイルが1つでも存在するディレクトリの集合を返す。
+    
+    あるディレクトリにSRTがあれば、そのディレクトリは「翻訳対象の講座」とみなし、
+    字幕なし動画も含めて全動画を処理対象とする。
+    """
+    if recursive:
+        srt_files = list(input_path.rglob("*.srt"))
+    else:
+        srt_files = list(input_path.glob("*.srt"))
+    
+    return {str(srt.parent) for srt in srt_files}
 
 
 def find_video_srt_pairs(
     input_dir: str,
     recursive: bool = True,
     video_extensions: List[str] = None,
+    include_copy_only: bool = True,
 ) -> List[VideoSRTPair]:
     """
     指定ディレクトリ内のMP4とSRTファイルをペアとして検出
+    
+    講座判定ロジック:
+    - ディレクトリ内に1つでもSRTファイルがあれば「翻訳対象の講座」とみなす
+    - SRTのある動画 → 吹き替え処理対象
+    - SRTのない動画（同講座内） → そのままコピー対象
+    - SRTが1つもないディレクトリ → 日本語講座として丸ごと無視
     
     Args:
         input_dir: 検索するディレクトリ
         recursive: サブディレクトリも検索するか
         video_extensions: 対応する動画ファイル拡張子のリスト
+        include_copy_only: 字幕なし動画もコピー対象として含めるか
         
     Returns:
-        検出されたペアのリスト
+        検出されたペアのリスト（copy_only=Trueのエントリ含む）
     """
     if video_extensions is None:
         video_extensions = ['.mp4', '.avi', '.mkv', '.mov', '.wmv']
@@ -44,6 +69,9 @@ def find_video_srt_pairs(
     input_path = Path(input_dir)
     if not input_path.exists():
         raise FileNotFoundError(f"入力ディレクトリが見つかりません: {input_dir}")
+    
+    # SRTファイルが存在するディレクトリの集合を取得
+    dirs_with_srt = _get_dirs_with_srt(input_path, recursive)
     
     pairs = []
     
@@ -57,22 +85,39 @@ def find_video_srt_pairs(
         for ext in video_extensions:
             video_files.extend(input_path.glob(f"*{ext}"))
     
-    # 各動画ファイルに対応するSRTファイルを探す
+    # 各動画ファイルを処理
     for video_file in video_files:
+        video_dir = str(video_file.parent)
+        
+        # このディレクトリにSRTが1つもなければスキップ（日本語講座）
+        if video_dir not in dirs_with_srt:
+            continue
+        
+        # 入力ルートからの相対パスを取得
+        try:
+            relative = video_file.relative_to(input_path)
+        except ValueError:
+            relative = video_file.name
+        
         # 同名のSRTファイルを探す
         srt_file = video_file.with_suffix('.srt')
         
         if srt_file.exists():
-            # 入力ルートからの相対パスを取得
-            try:
-                relative = video_file.relative_to(input_path)
-            except ValueError:
-                relative = video_file.name
-            
+            # SRTあり → 吹き替え対象
             pair = VideoSRTPair(
                 video_path=str(video_file),
                 srt_path=str(srt_file),
                 relative_path=str(relative),
+                copy_only=False,
+            )
+            pairs.append(pair)
+        elif include_copy_only:
+            # SRTなし、でも同講座内 → コピー対象
+            pair = VideoSRTPair(
+                video_path=str(video_file),
+                srt_path="",
+                relative_path=str(relative),
+                copy_only=True,
             )
             pairs.append(pair)
     
@@ -123,14 +168,20 @@ def print_batch_summary(pairs: List[VideoSRTPair], output_paths: List[str]) -> N
         pairs: 動画とSRTのペアのリスト
         output_paths: 出力パスのリスト
     """
+    dub_count = sum(1 for p in pairs if not p.copy_only)
+    copy_count = sum(1 for p in pairs if p.copy_only)
+    
     print("\n" + "=" * 80)
-    print(f"バッチ処理サマリー: {len(pairs)}個のファイルペアを検出")
+    print(f"バッチ処理サマリー: {len(pairs)}個のファイルを検出")
+    print(f"  吹き替え: {dub_count}個 / コピーのみ: {copy_count}個")
     print("=" * 80)
     
     for i, (pair, output) in enumerate(zip(pairs, output_paths), 1):
-        print(f"\n[{i}/{len(pairs)}]")
+        mode = "📋 コピー" if pair.copy_only else "🎤 吹き替え"
+        print(f"\n[{i}/{len(pairs)}] {mode}")
         print(f"  動画: {pair.video_path}")
-        print(f"  字幕: {pair.srt_path}")
+        if not pair.copy_only:
+            print(f"  字幕: {pair.srt_path}")
         print(f"  出力: {output}")
 
 
@@ -194,11 +245,12 @@ def create_batch_from_directory(
     preserve_structure: bool = True,
     suffix: str = "_dubbed",
     skip_existing: bool = False,
-) -> Tuple[List[str], List[str], List[str]]:
+) -> Tuple[List[str], List[str], List[str], List[bool]]:
     """
     ディレクトリからバッチ処理用のパスリストを生成
     
-    便利なワンステップ関数。pipeline_processor.create_dubbing_tasks()に渡せる形式を返します。
+    講座判定: ディレクトリ内に1つでもSRTがあれば翻訳対象講座とみなし、
+    字幕なし動画もコピー対象として含めます。SRTが一切ないディレクトリは無視します。
     
     Args:
         input_dir: 入力ディレクトリ
@@ -209,14 +261,14 @@ def create_batch_from_directory(
         skip_existing: 既存ファイルをスキップするか
         
     Returns:
-        (video_paths, srt_paths, output_paths)のタプル
+        (video_paths, srt_paths, output_paths, copy_only_flags)のタプル
     """
-    # ペアを検出
-    pairs = find_video_srt_pairs(input_dir, recursive=recursive)
+    # ペアを検出（字幕なし動画も含む）
+    pairs = find_video_srt_pairs(input_dir, recursive=recursive, include_copy_only=True)
     
     if not pairs:
-        print(f"⚠️ 動画とSRTのペアが見つかりませんでした: {input_dir}")
-        return [], [], []
+        print(f"⚠️ 処理対象の動画が見つかりませんでした: {input_dir}")
+        return [], [], [], []
     
     # 出力パスを生成
     output_paths = create_output_paths(
@@ -235,7 +287,7 @@ def create_batch_from_directory(
     
     if not pairs:
         print("ℹ️ 処理対象のファイルがありません（すべて既に存在）")
-        return [], [], []
+        return [], [], [], []
     
     # サマリー表示
     print_batch_summary(pairs, output_paths)
@@ -243,5 +295,6 @@ def create_batch_from_directory(
     # パスリストを抽出
     video_paths = [pair.video_path for pair in pairs]
     srt_paths = [pair.srt_path for pair in pairs]
+    copy_only_flags = [pair.copy_only for pair in pairs]
     
-    return video_paths, srt_paths, output_paths
+    return video_paths, srt_paths, output_paths, copy_only_flags

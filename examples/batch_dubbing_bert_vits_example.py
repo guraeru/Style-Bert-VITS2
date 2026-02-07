@@ -56,7 +56,7 @@ def main():
     
     # バッチ処理用のパスリストを生成
     print("📂 ファイルペアを検索中...")
-    video_paths, srt_paths, output_paths = create_batch_from_directory(
+    video_paths, srt_paths, output_paths, copy_only_flags = create_batch_from_directory(
         input_dir=input_dir,
         output_dir=output_dir,
         recursive=recursive,

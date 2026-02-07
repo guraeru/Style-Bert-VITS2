@@ -10,6 +10,7 @@
 
 import sys
 import re
+import shutil
 import configparser
 import os
 from pathlib import Path
@@ -281,13 +282,14 @@ def main():
         video_paths = [f.video_path for f in pending_files]
         srt_paths = [f.srt_path for f in pending_files]
         output_paths = [f.output_path for f in pending_files]
+        copy_only_flags = [f.copy_only for f in pending_files]
         
         print(f"📂 残り {len(video_paths)}件 を処理します\n")
     else:
         # 新規モード: ファイルを検索
         print("📂 ファイルを検索中...")
         try:
-            video_paths, srt_paths, output_paths = create_batch_from_directory(
+            video_paths, srt_paths, output_paths, copy_only_flags = create_batch_from_directory(
                 input_dir=str(input_dir),
                 output_dir=str(output_dir),
                 recursive=True,
@@ -303,7 +305,9 @@ def main():
             print("❌ 処理対象のファイルがありません。")
             return 1
         
-        print(f"   検出: {len(video_paths)}件\n")
+        dub_count = sum(1 for f in copy_only_flags if not f)
+        copy_count = sum(1 for f in copy_only_flags if f)
+        print(f"   検出: {len(video_paths)}件（吹き替え: {dub_count}件 / コピーのみ: {copy_count}件）\n")
         
         # 新しいセッションを作成
         progress_manager.create_new_session(
@@ -312,6 +316,7 @@ def main():
             video_paths=video_paths,
             srt_paths=srt_paths,
             output_paths=output_paths,
+            copy_only_flags=copy_only_flags,
         )
     
     # 確認
@@ -349,8 +354,8 @@ def main():
     total = len(video_paths)
     
     try:
-        for i, (video_path, srt_path, output_path) in enumerate(
-            zip(video_paths, srt_paths, output_paths), 1
+        for i, (video_path, srt_path, output_path, copy_only) in enumerate(
+            zip(video_paths, srt_paths, output_paths, copy_only_flags), 1
         ):
             video_name = Path(video_path).name
             filename_without_ext = Path(video_path).stem
@@ -359,33 +364,39 @@ def main():
             # 処理中としてマーク
             progress_manager.mark_in_progress(output_path)
             
-            # ファイル名が続編（xx-2以上）かどうかを判定
-            is_sequel = is_continuation(filename_without_ext)
-            overlay = config["overlay"]
-            intro_duration = 0.0
-            
-            # 開始ファイル（1-1、02-1など）の場合、冒頭5秒のみ元音声を重ねる
-            if not is_sequel:
-                overlay = True
-                intro_duration = 5.0
-                print(f"  📝 冒頭5秒のみ元音声と吹き替え音声をミックスします")
-            else:
-                # 続編ファイル（1-2、02-2など）は吹き替え音声のみ
-                overlay = False
-                print(f"  📝 吹き替え音声のみを使用します（元音声なし）")
-            
             try:
                 Path(output_path).parent.mkdir(parents=True, exist_ok=True)
                 
-                automation.create_dubbed_video(
-                    video_path=video_path,
-                    srt_path=srt_path,
-                    output_path=output_path,
-                    overlay=overlay,
-                    audio_volume=config["audio_volume"],
-                    original_volume=config["original_volume"],
-                    intro_duration=intro_duration,
-                )
+                if copy_only:
+                    # 字幕なし動画: そのままコピー
+                    print(f"  📋 字幕なし→動画をそのままコピーします")
+                    shutil.copy2(video_path, output_path)
+                else:
+                    # 字幕あり動画: 吹き替え処理
+                    # ファイル名が続編（xx-2以上）かどうかを判定
+                    is_sequel = is_continuation(filename_without_ext)
+                    overlay = config["overlay"]
+                    intro_duration = 0.0
+                    
+                    # 開始ファイル（1-1、02-1など）の場合、冒頭5秒のみ元音声を重ねる
+                    if not is_sequel:
+                        overlay = True
+                        intro_duration = 5.0
+                        print(f"  📝 冒頭5秒のみ元音声と吹き替え音声をミックスします")
+                    else:
+                        # 続編ファイル（1-2、02-2など）は吹き替え音声のみ
+                        overlay = False
+                        print(f"  📝 吹き替え音声のみを使用します（元音声なし）")
+                    
+                    automation.create_dubbed_video(
+                        video_path=video_path,
+                        srt_path=srt_path,
+                        output_path=output_path,
+                        overlay=overlay,
+                        audio_volume=config["audio_volume"],
+                        original_volume=config["original_volume"],
+                        intro_duration=intro_duration,
+                    )
                 
                 # 完了としてマーク
                 progress_manager.mark_completed(output_path)

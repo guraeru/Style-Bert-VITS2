@@ -29,6 +29,7 @@ class FileProgress:
     srt_path: str
     output_path: str
     status: str
+    copy_only: bool = False  # Trueの場合、吹き替えせずそのままコピー
     error_message: Optional[str] = None
     started_at: Optional[str] = None
     completed_at: Optional[str] = None
@@ -157,6 +158,7 @@ class ProgressManager:
         video_paths: List[str],
         srt_paths: List[str],
         output_paths: List[str],
+        copy_only_flags: Optional[List[bool]] = None,
     ) -> BatchProgress:
         """
         新しいバッチ処理セッションを作成
@@ -167,17 +169,22 @@ class ProgressManager:
             video_paths: 動画ファイルパスのリスト
             srt_paths: SRTファイルパスのリスト
             output_paths: 出力ファイルパスのリスト
+            copy_only_flags: コピーのみフラグのリスト
         """
+        if copy_only_flags is None:
+            copy_only_flags = [False] * len(video_paths)
+        
         now = datetime.now().isoformat()
         session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
         
         files = []
-        for video, srt, output in zip(video_paths, srt_paths, output_paths):
+        for video, srt, output, copy_only in zip(video_paths, srt_paths, output_paths, copy_only_flags):
             files.append(FileProgress(
                 video_path=video,
                 srt_path=srt,
                 output_path=output,
                 status=ProcessingStatus.PENDING.value,
+                copy_only=copy_only,
             ))
         
         self.progress = BatchProgress(
