@@ -8,11 +8,18 @@ TTSで字幕から音声を生成し、タイミングに合わせて1つのWAV�
 - 音声が長すぎる場合は話速を調整して再生成します
 """
 
+import gc
 import os
 import wave
 import numpy as np
 from typing import List, Tuple, Optional
 from pathlib import Path
+
+try:
+    import torch
+    _HAS_TORCH = True
+except ImportError:
+    _HAS_TORCH = False
 
 from style_bert_vits2.tts_model import TTSModel
 from .srt_parser import SRTEntry
@@ -165,6 +172,7 @@ class AudioGenerator:
         - 例: A音声が3秒超過 → B音声の開始が3秒遅延 → C音声以降も影響を受ける可能性
         
         各字幕に対して音声を生成し、タイミングに合わせて無音を挿入します。
+        メモリ効率のため、生成した音声は即座にWAVファイルへストリーミング書き込みします。
         最終的な音声時間と動画時間を比較し、許容範囲を超える場合は再生成が必要と判定します。
         
         Args:
@@ -179,47 +187,71 @@ class AudioGenerator:
             (成功フラグ, 実際の音声時間)
             成功フラグ: 許容範囲内に収まればTrue
         """
-        all_audio = []
         current_time = 0.0  # 実際の音声再生時刻(遅延を考慮)
         length_scale = self.initial_length_scale
+        total_samples = 0
         
-        for entry in entries:
-            # 前の字幕からのギャップを無音で埋める
-            # ただし、前の音声が超過していた場合は無音なし(キュー方式)
-            if entry.start_time > current_time:
-                silence_duration = entry.start_time - current_time
-                silence = self.generate_silence(silence_duration)
-                all_audio.append(silence)
-                current_time = entry.start_time
-            # else: current_time >= entry.start_time の場合
-            #       → 前の音声が超過しているので、キューに入り無音なしで次の音声を続ける
-            
-            # 音声生成(自動話速調整あり)
-            audio = self.generate_audio_for_entry(
-                entry,
-                length_scale=length_scale,
-                style=style,
-                style_weight=style_weight,
-            )
-            all_audio.append(audio)
-            
-            # 現在時刻を更新(音声の長さ分進める)
-            audio_duration = len(audio) / self.sample_rate
-            current_time += audio_duration
-            
-            # 遅延が発生している場合は警告
-            if current_time > entry.end_time:
-                delay = current_time - entry.end_time
-                print(f"  字幕{entry.index}: 音声が{delay:.2f}秒超過(次の音声が遅延します)")
+        # 出力ディレクトリを作成
+        out_dir = os.path.dirname(output_path)
+        if out_dir:
+            os.makedirs(out_dir, exist_ok=True)
         
-        # 結合
-        combined_audio = np.concatenate(all_audio)
-        # 実際のサンプリングレートを使用
+        # WAVファイルへストリーミング書き込み（メモリ効率改善）
+        # 全音声をメモリに蓄積せず、生成した音声を即座に書き込む
         actual_sr = getattr(self, '_actual_sample_rate', self.sample_rate)
-        total_duration = len(combined_audio) / actual_sr
         
-        # WAVファイル保存
-        self._save_wav(output_path, combined_audio)
+        with wave.open(output_path, 'w') as wav_file:
+            wav_file.setnchannels(1)    # モノラル
+            wav_file.setsampwidth(2)    # 16bit
+            wav_file.setframerate(actual_sr)
+            
+            for i, entry in enumerate(entries):
+                # 前の字幕からのギャップを無音で埋める
+                # ただし、前の音声が超過していた場合は無音なし(キュー方式)
+                if entry.start_time > current_time:
+                    silence_duration = entry.start_time - current_time
+                    silence = self.generate_silence(silence_duration)
+                    self._write_audio_chunk(wav_file, silence)
+                    total_samples += len(silence)
+                    current_time = entry.start_time
+                # else: current_time >= entry.start_time の場合
+                #       → 前の音声が超過しているので、キューに入り無音なしで次の音声を続ける
+                
+                # 音声生成(自動話速調整あり)
+                audio = self.generate_audio_for_entry(
+                    entry,
+                    length_scale=length_scale,
+                    style=style,
+                    style_weight=style_weight,
+                )
+                
+                # 初回推論後にサンプリングレートを確認・更新
+                new_sr = getattr(self, '_actual_sample_rate', self.sample_rate)
+                if new_sr != actual_sr and i == 0:
+                    actual_sr = new_sr
+                    wav_file.setframerate(actual_sr)
+                
+                # WAVファイルに直接書き込み（メモリ解放）
+                self._write_audio_chunk(wav_file, audio)
+                total_samples += len(audio)
+                
+                # 現在時刻を更新(音声の長さ分進める)
+                audio_duration = len(audio) / actual_sr
+                current_time += audio_duration
+                
+                # 遅延が発生している場合は警告
+                if current_time > entry.end_time:
+                    delay = current_time - entry.end_time
+                    print(f"  字幕{entry.index}: 音声が{delay:.2f}秒超過(次の音声が遅延します)")
+                
+                # 定期的にメモリを解放（長い動画のOOM防止）
+                if (i + 1) % 100 == 0:
+                    gc.collect()
+                    if _HAS_TORCH and torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+        
+        # 結果判定
+        total_duration = total_samples / actual_sr
         
         # 許容範囲チェック
         overflow = total_duration - video_duration
@@ -285,6 +317,20 @@ class AudioGenerator:
                 return True
         
         return False
+    
+    def _write_audio_chunk(self, wav_file, audio: np.ndarray):
+        """
+        音声チャンクをWAVファイルに直接書き込む（メモリ効率改善）
+        
+        各字幕の音声を個別にint16変換して書き込むため、
+        全体を一度にメモリに保持する必要がありません。
+        
+        Args:
+            wav_file: wave.Wave_writeオブジェクト
+            audio: 音声データ(float32, -1.0~1.0)
+        """
+        audio_int16 = (audio * 32767).astype(np.int16)
+        wav_file.writeframes(audio_int16.tobytes())
     
     def _save_wav(self, path: str, audio: np.ndarray):
         """
