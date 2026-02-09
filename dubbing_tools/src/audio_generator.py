@@ -245,10 +245,10 @@ class AudioGenerator:
                     print(f"  字幕{entry.index}: 音声が{delay:.2f}秒超過(次の音声が遅延します)")
                 
                 # 定期的にメモリを解放（長い動画のOOM防止）
-                if (i + 1) % 100 == 0:
-                    gc.collect()
-                    if _HAS_TORCH and torch.cuda.is_available():
-                        torch.cuda.empty_cache()
+                del audio
+                gc.collect()
+                if _HAS_TORCH and torch.cuda.is_available():
+                    torch.cuda.empty_cache()
         
         # 結果判定
         total_duration = total_samples / actual_sr
