@@ -246,9 +246,10 @@ class AudioGenerator:
                 
                 # 定期的にメモリを解放（長い動画のOOM防止）
                 del audio
-                gc.collect()
-                if _HAS_TORCH and torch.cuda.is_available():
-                    torch.cuda.empty_cache()
+                if (i + 1) % 50 == 0:
+                    gc.collect()
+                    if _HAS_TORCH and torch.cuda.is_available():
+                        torch.cuda.empty_cache()
         
         # 結果判定
         total_duration = total_samples / actual_sr
