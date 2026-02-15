@@ -1,19 +1,18 @@
 """
-バッチ吹き替え処理 - メインエントリーポイント
+単一セクション吹き替え処理 - カスタムディレクトリ対応版
 
 使用方法:
-    python dubbing_tools/run_batch.py
-    python dubbing_tools/run_batch.py --path "C:\\path\\to\\directory"
+    python dubbing_tools/run_single_section.py
+    または
+    python dubbing_tools/run_single_section.py --path "C:\\path\\to\\section"
     
-話者を選択式で選んで一括処理を開始します。
-中断しても .dubbing_progress.json を使って続きから再開できます。
+セクションを選択式で選んで処理を実行します。
 """
 
 import sys
 import re
 import shutil
 import configparser
-import os
 import argparse
 from pathlib import Path
 from loguru import logger
@@ -39,37 +38,19 @@ logger.add(
 def is_continuation(filename: str) -> bool:
     """
     ファイル名が続編（xx-2以上）かどうかを判定
-    
-    続編ファイル（冒頭音声なし）:
-      - 01-2, 02-2, 1-2, 2-2, 1-3, 2-10 など
-      
-    開始ファイル（冒頭音声あり）:
-      - 001, 01-1, 1, 1-1, 2-1 など
-      
-    Args:
-        filename: ファイル名（拡張子なし）
-        
-    Returns:
-        続編（xx-2以上）ならTrue、それ以外はFalse
     """
-    # ファイル名の先頭部分を抽出（最初の数字と記号まで）
     match = re.match(r'^(\d+)(?:-(\d+))?', filename)
     if not match:
-        # パターンにマッチしない場合は冒頭音声を入れる（続編ではない）
         return False
     
     part_num = int(match.group(2)) if match.group(2) else None
     
-    # パターン判定
-    # 1. 単独の数字の場合（1, 2, 001等）→ 続編ではない
     if part_num is None:
         return False
     
-    # 2. "N-1"パターン（セクションNの第1部）→ 続編ではない
     if part_num == 1:
         return False
     
-    # 3. N-2, N-3等は続編なのでTrue
     return True
 
 
@@ -82,7 +63,6 @@ def get_available_models():
     models = []
     for d in model_dir.iterdir():
         if d.is_dir() and not d.name.startswith('.'):
-            # .safetensorsファイルがあるかチェック
             safetensors = list(d.glob("*.safetensors"))
             if safetensors:
                 models.append(d.name)
@@ -124,7 +104,6 @@ def load_config():
     """config.ini から設定を読み込む"""
     config_path = DUBBING_TOOLS_DIR / "config.ini"
     
-    # デフォルト設定
     settings = {
         "input_dir": "input_mp4",
         "output_dir": "output_mp4",
@@ -142,202 +121,197 @@ def load_config():
     config = configparser.ConfigParser()
     config.read(config_path, encoding="utf-8")
     
-    # [paths]
     if config.has_section("paths"):
         settings["input_dir"] = config.get("paths", "input_dir", fallback=settings["input_dir"])
         settings["output_dir"] = config.get("paths", "output_dir", fallback=settings["output_dir"])
     
-    # [model]
     if config.has_section("model"):
         settings["model_name"] = config.get("model", "name", fallback=settings["model_name"])
         settings["device"] = config.get("model", "device", fallback=settings["device"])
     
-    # [audio]
     if config.has_section("audio"):
         settings["overlay"] = config.getboolean("audio", "overlay", fallback=settings["overlay"])
         settings["audio_volume"] = config.getfloat("audio", "audio_volume", fallback=settings["audio_volume"])
         settings["original_volume"] = config.getfloat("audio", "original_volume", fallback=settings["original_volume"])
     
-    # [processing]
     if config.has_section("processing"):
         settings["skip_existing"] = config.getboolean("processing", "skip_existing", fallback=settings["skip_existing"])
     
     return settings
 
 
-def ask_resume_or_new(progress_manager: ProgressManager) -> str:
-    """
-    既存の進捗がある場合、再開するか新規開始するか確認
-    
-    Returns:
-        "resume": 再開
-        "new": 新規開始
-        "cancel": キャンセル
-    """
-    info = progress_manager.get_resumable_info()
-    
-    print("\n" + "=" * 60)
-    print("📂 前回の処理が中断されています")
-    print("=" * 60)
-    print(f"   セッションID: {info['session_id']}")
-    print(f"   モデル: {info['model_name']}")
-    print(f"   開始日時: {info['created_at']}")
-    print(f"   合計: {info['total']}件")
-    print(f"   完了: {info['completed']}件")
-    print(f"   失敗: {info['failed']}件")
-    print(f"   残り: {info['pending']}件")
-    print()
-    
-    while True:
-        print("どうしますか？")
-        print("  [1] 続きから再開する")
-        print("  [2] 最初からやり直す（進捗をクリア）")
-        print("  [3] キャンセル")
-        print()
-        
-        try:
-            choice = input("番号を入力 > ").strip()
-            if choice == "1":
-                return "resume"
-            elif choice == "2":
-                confirm = input("本当に進捗をクリアしますか？ [y/N] > ").strip().lower()
-                if confirm == 'y':
-                    progress_manager.clear_progress()
-                    return "new"
-                else:
-                    continue
-            elif choice == "3":
-                return "cancel"
-            else:
-                print("❌ 1, 2, 3 のいずれかを入力してください。")
-        except KeyboardInterrupt:
-            print("\n\nキャンセルしました。")
-            return "cancel"
-
-
 def main():
     parser = argparse.ArgumentParser(
-        description="バッチで複数セクションの吹き替え処理を実行します",
+        description="単一セクションの吹き替え処理を実行します",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 使用例:
-  python dubbing_tools/run_batch.py
-  python dubbing_tools/run_batch.py --path "C:\\path\\to\\directory"
-  python dubbing_tools/run_batch.py -p "C:\\input\\directory"
+  python dubbing_tools/run_single_section.py
+  python dubbing_tools/run_single_section.py --path "C:\\path\\to\\section"
         """
     )
-    parser.add_argument("--path", "-p", type=str, help="処理対象ディレクトリ（指定しない場合はデフォルト）")
+    parser.add_argument("--path", "-p", type=str, help="処理対象のセクションパス（指定しない場合は選択UI）")
     
     args = parser.parse_args()
     
     print("\n" + "=" * 60)
-    print("🎬 Style-Bert-VITS2 吹き替えバッチ処理")
-    print("   (中断しても続きから再開できます)")
+    print("🎬 Style-Bert-VITS2 単一セクション吹き替え処理")
     print("=" * 60)
     
-    # 設定を読み込む
     config = load_config()
     
-    # 相対パスを絶対パスに変換
+    # 処理対象ディレクトリを決定
     if args.path:
         input_dir = Path(args.path)
+        if not input_dir.exists():
+            print(f"❌ ディレクトリが見つかりません: {input_dir}")
+            return 1
     else:
-        input_dir = Path(config["input_dir"])
+        # セクション選択UI
+        print("\n" + "=" * 60)
+        print("📂 処理対象セクションを選択してください")
+        print("=" * 60)
+        
+        # デフォルトinput_dirを確認
+        default_input = Path(config["input_dir"])
+        if not default_input.is_absolute():
+            default_input = PROJECT_ROOT / default_input
+        
+        if not default_input.exists():
+            print(f"❌ デフォルト入力ディレクトリが見つかりません: {default_input}")
+            custom_path = input("カスタムパスを入力してください > ").strip()
+            if not custom_path:
+                print("キャンセルしました。")
+                return 0
+            input_dir = Path(custom_path)
+        else:
+            input_dir = default_input
+        
+        # ディレクトリ一覧を表示
+        subdirs = sorted([d for d in input_dir.iterdir() if d.is_dir()])
+        
+        if not subdirs:
+            print(f"❌ セクションが見つかりません: {input_dir}")
+            return 1
+        
+        print()
+        for i, d in enumerate(subdirs, 1):
+            # ファイル数を表示（サブディレクトリ内も再帰的にカウント）
+            file_count = len(list(d.rglob("*.mp4")))
+            srt_count = len(list(d.rglob("*.srt")))
+            print(f"  [{i}] {d.name} ({file_count}個のビデオ, {srt_count}個の字幕)")
+        
+        print()
+        
+        while True:
+            try:
+                choice = input("番号を入力 > ").strip()
+                if not choice:
+                    continue
+                
+                idx = int(choice) - 1
+                if 0 <= idx < len(subdirs):
+                    input_dir = subdirs[idx]
+                    print(f"\n✅ 選択: {input_dir.name}\n")
+                    break
+                else:
+                    print("❌ 無効な番号です。もう一度入力してください。")
+            except ValueError:
+                print("❌ 数字を入力してください。")
+            except KeyboardInterrupt:
+                print("\n\nキャンセルしました。")
+                return 0
     
+    # 出力ディレクトリを設定
     output_dir = Path(config["output_dir"])
-    
-    if not input_dir.is_absolute():
-        input_dir = PROJECT_ROOT / input_dir
     if not output_dir.is_absolute():
         output_dir = PROJECT_ROOT / output_dir
     
-    # 進捗管理の初期化
-    progress_manager = ProgressManager(str(output_dir))
+    # セクション名から出力サブディレクトリを作成
+    relative_name = input_dir.name
+    output_dir = output_dir / relative_name
     
-    # 既存の進捗があるか確認
-    resume_mode = False
+    # 進捗管理の初期化
+    progress_manager = ProgressManager(str(output_dir.parent))
+    
+    # 既存の進捗を確認
     if progress_manager.has_existing_progress():
         progress_manager.load_progress()
         pending = progress_manager.get_pending_files()
         
         if pending:
-            choice = ask_resume_or_new(progress_manager)
-            if choice == "cancel":
+            info = progress_manager.get_resumable_info()
+            print("\n" + "=" * 60)
+            print("📂 前回の処理が中断されています")
+            print("=" * 60)
+            print(f"   完了: {info['completed']}件 / 失敗: {info['failed']}件 / 残り: {info['pending']}件")
+            print()
+            
+            try:
+                choice = input("続きから再開しますか？ [Y/n] > ").strip().lower()
+                if choice == 'n':
+                    progress_manager.clear_progress()
+                else:
+                    config["model_name"] = progress_manager.progress.model_name
+                    print(f"\n✅ 続きから再開します（モデル: {config['model_name']}）\n")
+            except KeyboardInterrupt:
+                print("\nキャンセルしました。")
                 return 0
-            elif choice == "resume":
-                resume_mode = True
-                # 前回のモデル名を使用
-                config["model_name"] = progress_manager.progress.model_name
-                print(f"\n✅ 前回のセッションから再開します（モデル: {config['model_name']}）\n")
         else:
-            # 全て完了済み、進捗をクリア
-            print("前回の処理は全て完了しています。新規処理を開始します。")
             progress_manager.clear_progress()
     
-    # 再開モードでなければモデルを選択
-    if not resume_mode:
-        # 利用可能なモデルを取得
+    # モデル選択（再開でない場合）
+    if not progress_manager.has_existing_progress():
         models = get_available_models()
         if not models:
             print("❌ model_assets/ にモデルが見つかりません。")
             return 1
         
-        # 話者を選択
         model_name = select_model(models)
         config["model_name"] = model_name
     
     print("📋 設定:")
+    print(f"   セクション: {input_dir.name}")
     print(f"   話者: {config['model_name']}")
     print(f"   入力: {input_dir}")
     print(f"   出力: {output_dir}")
     print(f"   デバイス: {config['device']}")
     print()
     
-    # ファイルペアを検出（再開モードでない場合のみ）
+    # ファイル検出
     from dubbing_tools.src.batch_processor import create_batch_from_directory
     
-    if resume_mode:
-        # 再開モード: 進捗ファイルから未処理のファイルを取得
-        pending_files = progress_manager.get_pending_files()
-        video_paths = [f.video_path for f in pending_files]
-        srt_paths = [f.srt_path for f in pending_files]
-        output_paths = [f.output_path for f in pending_files]
-        copy_only_flags = [f.copy_only for f in pending_files]
-        
-        print(f"📂 残り {len(video_paths)}件 を処理します\n")
-    else:
-        # 新規モード: ファイルを検索
-        print("📂 ファイルを検索中...")
-        try:
-            video_paths, srt_paths, output_paths, copy_only_flags = create_batch_from_directory(
-                input_dir=str(input_dir),
-                output_dir=str(output_dir),
-                recursive=True,
-                preserve_structure=True,
-                suffix="",
-                skip_existing=config["skip_existing"],
-            )
-        except Exception as e:
-            print(f"❌ エラー: {e}")
-            return 1
-        
-        if not video_paths:
-            print("❌ 処理対象のファイルがありません。")
-            return 1
-        
-        dub_count = sum(1 for f in copy_only_flags if not f)
-        copy_count = sum(1 for f in copy_only_flags if f)
-        print(f"   検出: {len(video_paths)}件（吹き替え: {dub_count}件 / コピーのみ: {copy_count}件）\n")
-        
-        # 新しいセッションを作成
-        progress_manager.create_new_session(
-            model_name=config["model_name"],
+    print("📂 ファイルを検索中...")
+    try:
+        video_paths, srt_paths, output_paths, copy_only_flags = create_batch_from_directory(
             input_dir=str(input_dir),
-            video_paths=video_paths,
-            srt_paths=srt_paths,
-            output_paths=output_paths,
-            copy_only_flags=copy_only_flags,
+            output_dir=str(output_dir),
+            recursive=True,
+            preserve_structure=True,
+            suffix="",
+            skip_existing=config["skip_existing"],
         )
+    except Exception as e:
+        print(f"❌ エラー: {e}")
+        return 1
+    
+    if not video_paths:
+        print("❌ 処理対象のファイルがありません。")
+        return 1
+    
+    dub_count = sum(1 for f in copy_only_flags if not f)
+    copy_count = sum(1 for f in copy_only_flags if f)
+    print(f"   検出: {len(video_paths)}件（吹き替え: {dub_count}件 / コピーのみ: {copy_count}件）\n")
+    
+    # 新しいセッションを作成
+    progress_manager.create_new_session(
+        model_name=config["model_name"],
+        input_dir=str(input_dir),
+        video_paths=video_paths,
+        srt_paths=srt_paths,
+        output_paths=output_paths,
+        copy_only_flags=copy_only_flags,
+    )
     
     # 確認
     print("処理を開始しますか？ [Y/n] ", end="")
@@ -345,14 +319,12 @@ def main():
         answer = input().strip().lower()
         if answer and answer != 'y':
             print("キャンセルしました。")
-            print("💡 進捗は保存されています。次回起動時に再開できます。")
             return 0
     except KeyboardInterrupt:
         print("\nキャンセルしました。")
-        print("💡 進捗は保存されています。次回起動時に再開できます。")
         return 0
     
-    # モデルを初期化
+    # モデル初期化
     from dubbing_tools.src.dubbing_automation import DubbingAutomation
     
     print("\n🤖 モデルを読み込み中...")
@@ -381,30 +353,24 @@ def main():
             filename_without_ext = Path(video_path).stem
             print(f"[{i}/{total}] {video_name}")
             
-            # 処理中としてマーク
             progress_manager.mark_in_progress(output_path)
             
             try:
                 Path(output_path).parent.mkdir(parents=True, exist_ok=True)
                 
                 if copy_only:
-                    # 字幕なし動画: そのままコピー
                     print(f"  📋 字幕なし→動画をそのままコピーします")
                     shutil.copy2(video_path, output_path)
                 else:
-                    # 字幕あり動画: 吹き替え処理
-                    # ファイル名が続編（xx-2以上）かどうかを判定
                     is_sequel = is_continuation(filename_without_ext)
                     overlay = config["overlay"]
                     intro_duration = 0.0
                     
-                    # 開始ファイル（1-1、02-1など）の場合、冒頭5秒のみ元音声を重ねる
                     if not is_sequel:
                         overlay = True
                         intro_duration = 5.0
                         print(f"  📝 冒頭5秒のみ元音声と吹き替え音声をミックスします")
                     else:
-                        # 続編ファイル（1-2、02-2など）は吹き替え音声のみ
                         overlay = False
                         print(f"  📝 吹き替え音声のみを使用します（元音声なし）")
                     
@@ -418,13 +384,11 @@ def main():
                         intro_duration=intro_duration,
                     )
                 
-                # 完了としてマーク
                 progress_manager.mark_completed(output_path)
                 completed += 1
                 print(f"  ✅ 完了\n")
                 
             except Exception as e:
-                # 失敗としてマーク
                 progress_manager.mark_failed(output_path, str(e))
                 failed += 1
                 logger.error(f"処理エラー: {video_name}", exc_info=True)
@@ -445,7 +409,6 @@ def main():
     if completed > 0:
         print(f"\n✅ 出力先: {output_dir}")
     
-    # 全て完了したら進捗ファイルを削除
     if failed == 0 and completed == total:
         progress_manager.clear_progress()
         print("✅ 全ての処理が完了しました！")
@@ -453,7 +416,6 @@ def main():
         progress_manager.print_summary()
         if failed > 0:
             print("\n💡 失敗したファイルは次回起動時にスキップされます。")
-            print("   再処理するには進捗をクリアしてください。")
     
     return 0 if failed == 0 else 1
 
