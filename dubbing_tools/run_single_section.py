@@ -12,6 +12,7 @@
 import sys
 import re
 import shutil
+import tempfile
 import configparser
 import argparse
 from pathlib import Path
@@ -345,6 +346,10 @@ def main():
     failed = 0
     total = len(video_paths)
     
+    # 一時ディレクトリは出力先と同じドライブに作成（同一FS上ならos.renameでアトミック移動）
+    temp_base = output_dir / ".tmp_processing"
+    temp_base.mkdir(parents=True, exist_ok=True)
+    
     try:
         for i, (video_path, srt_path, output_path, copy_only) in enumerate(
             zip(video_paths, srt_paths, output_paths, copy_only_flags), 1
@@ -355,12 +360,20 @@ def main():
             
             progress_manager.mark_in_progress(output_path)
             
+            # ファイルごとに一時ディレクトリを作成
+            temp_dir = None
             try:
+                temp_dir = Path(tempfile.mkdtemp(dir=str(temp_base)))
+                
+                # 最終出力先のディレクトリ構造を確保
                 Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+                
+                # 一時ファイルパスを生成（最終ファイル名と同じ名前をtempdir内に）
+                temp_output_path = str(temp_dir / Path(output_path).name)
                 
                 if copy_only:
                     print(f"  📋 字幕なし→動画をそのままコピーします")
-                    shutil.copy2(video_path, output_path)
+                    shutil.copy2(video_path, temp_output_path)
                 else:
                     is_sequel = is_continuation(filename_without_ext)
                     overlay = config["overlay"]
@@ -377,12 +390,21 @@ def main():
                     automation.create_dubbed_video(
                         video_path=video_path,
                         srt_path=srt_path,
-                        output_path=output_path,
+                        output_path=temp_output_path,
                         overlay=overlay,
                         audio_volume=config["audio_volume"],
                         original_volume=config["original_volume"],
                         intro_duration=intro_duration,
                     )
+                
+                # 一時ファイルから最終出力先へアトミック移動
+                # tempdir内に生成された全ファイル（動画＋SRTなど）を移動
+                for temp_file in temp_dir.iterdir():
+                    final_path = Path(output_path).parent / temp_file.name
+                    # 既存ファイルがあれば先に削除（os.renameはWindowsで上書き不可のため）
+                    if final_path.exists():
+                        final_path.unlink()
+                    shutil.move(str(temp_file), str(final_path))
                 
                 progress_manager.mark_completed(output_path)
                 completed += 1
@@ -393,13 +415,27 @@ def main():
                 failed += 1
                 logger.error(f"処理エラー: {video_name}", exc_info=True)
                 print(f"  ❌ エラー: {e}\n")
+                # 失敗時に不完全な出力先ファイルが残らないよう保証
+                if Path(output_path).exists():
+                    try:
+                        Path(output_path).unlink()
+                    except OSError:
+                        pass
                 continue
+            finally:
+                # 一時ディレクトリを確実にクリーンアップ
+                if temp_dir and temp_dir.exists():
+                    shutil.rmtree(str(temp_dir), ignore_errors=True)
                 
     except KeyboardInterrupt:
         print("\n\n⚠️ 処理が中断されました")
         print("💡 進捗は保存されています。次回起動時に続きから再開できます。")
         progress_manager.print_summary()
         return 1
+    finally:
+        # 一時ディレクトリのベースフォルダをクリーンアップ
+        if temp_base.exists():
+            shutil.rmtree(str(temp_base), ignore_errors=True)
     
     # 結果表示
     print("=" * 60)
