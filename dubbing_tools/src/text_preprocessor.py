@@ -18,7 +18,19 @@ class TextPreprocessor:
     """読み方調整とカタカナ英語変換を担うクラス。"""
 
     # 辞書で扱う単語形式（英数字 + 内部ハイフン/アポストロフィ + 先頭アポストロフィ）を広く拾う
-    WORD_PATTERN = re.compile(r"(?<![A-Za-z0-9])['’]?[A-Za-z0-9]+(?:[-'][A-Za-z0-9]+)*(?![A-Za-z0-9])")
+    WORD_PATTERN = re.compile(
+        r"(?<![A-Za-z0-9])['’]?[A-Za-z0-9]+(?:[._:/+\-][A-Za-z0-9]+|[-'][A-Za-z0-9]+)*(?![A-Za-z0-9])"
+    )
+    # 英字/数字/区切り記号の境界で分割する（blender4.0.0 -> blender | 4.0.0）
+    TOKEN_SPLIT_BOUNDARY = re.compile(
+        r"(?<=[A-Za-z])(?=\d)"
+        r"|(?<=\d)(?=[A-Za-z])"
+        r"|(?<=[A-Za-z0-9])(?=[_:/+\-])"
+        r"|(?<=[_:/+\-])(?=[A-Za-z0-9])"
+        r"|(?<=[A-Za-z])(?=\.)"
+        r"|(?<=\.)(?=[A-Za-z])"
+    )
+    VERSION_NUMBER_PATTERN = re.compile(r"^\d+(?:\.\d+)+$")
 
     @staticmethod
     def _resolve_default_csv(base_dir: Path, filename: str) -> Path:
@@ -56,7 +68,7 @@ class TextPreprocessor:
         self.english_dict = self._load_english_dict(english_dict_csv)
 
     def convert_english_to_katakana(self, text: str) -> str:
-        """英単語を辞書でカタカナに変換する。辞書にない単語はそのまま返す。"""
+        """英単語を辞書でカタカナに変換する。混在トークンは要素分解して再解釈する。"""
 
         # 全角英数や互換文字を吸収し、辞書キーと同じ正規化規則で比較できるようにする
         normalized_text = unicodedata.normalize("NFKC", text)
@@ -68,10 +80,46 @@ class TextPreprocessor:
             katakana = self._lookup_dictionary(english_word)
             if katakana:
                 return katakana
-            
-            return english_word
+
+            # blender4.0.0 のような混在トークンを分解して再変換
+            return self._convert_mixed_token(english_word)
 
         return self.WORD_PATTERN.sub(replace, normalized_text)
+
+    @classmethod
+    def _split_mixed_token(cls, token: str) -> list[str]:
+        """英字/数字/区切り記号の境界でトークンを分割する。"""
+
+        return [part for part in cls.TOKEN_SPLIT_BOUNDARY.split(token) if part]
+
+    def _convert_mixed_token(self, token: str) -> str:
+        """混在トークンを分解し、英字部分を辞書変換する。"""
+
+        parts = self._split_mixed_token(token)
+        if len(parts) <= 1:
+            return token
+
+        converted_parts: list[str] = []
+        for part in parts:
+            if re.fullmatch(r"[A-Za-z]+(?:[-'][A-Za-z]+)*", part):
+                katakana = self._lookup_dictionary(part)
+                converted_parts.append(katakana if katakana else part)
+                continue
+
+            if self.VERSION_NUMBER_PATTERN.fullmatch(part):
+                # 4.0.0 のようなバージョンは点区切り読みへ寄せる
+                converted_parts.append(part.replace(".", "点"))
+                continue
+
+            if part in {".", "_", "/", ":", "+", "-"}:
+                converted_parts.append(" ")
+                continue
+
+            converted_parts.append(part)
+
+        merged = "".join(converted_parts)
+        merged = re.sub(r"\s{2,}", " ", merged).strip()
+        return merged if merged else token
 
 
     @staticmethod

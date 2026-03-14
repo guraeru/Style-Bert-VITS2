@@ -10,11 +10,21 @@ import time
 from uuid import uuid4
 from pathlib import Path
 from typing import Optional
+from dataclasses import dataclass
 
 from style_bert_vits2.tts_model import TTSModel
 from .srt_parser import SRTParser
 from .audio_generator import AudioGenerator
 from .video_combiner import VideoCombiner
+
+
+@dataclass
+class StagedDubResult:
+    """ローカル作業領域に生成済みの中間成果物を表す。"""
+
+    final_output_path: Path
+    staging_video_path: Path
+    staging_srt_path: Path
 
 
 class DubbingAutomation:
@@ -161,35 +171,63 @@ class DubbingAutomation:
         Returns:
             成功したらTrue
         """
+        staged = self.create_dubbed_video_to_staging(
+            video_path=video_path,
+            srt_path=srt_path,
+            output_path=output_path,
+            temp_audio_path=temp_audio_path,
+            work_dir=work_dir,
+            style=style,
+            style_weight=style_weight,
+            overlay=overlay,
+            audio_volume=audio_volume,
+            original_volume=original_volume,
+            intro_duration=intro_duration,
+        )
+        self.deploy_staged_output(staged)
+        print(f"✅ 吹き替え動画作成完了: {staged.final_output_path}")
+        return True
+
+    def create_dubbed_video_to_staging(
+        self,
+        video_path: str,
+        srt_path: str,
+        output_path: str,
+        temp_audio_path: Optional[str] = None,
+        work_dir: Optional[str] = None,
+        style: str = "Neutral",
+        style_weight: float = 1.0,
+        overlay: bool = False,
+        audio_volume: float = 1.0,
+        original_volume: float = 0.3,
+        intro_duration: float = 0.0,
+    ) -> StagedDubResult:
+        """GPU推論と動画合成までを実行し、成果物をローカル作業領域へ出力する。"""
+
         final_output_path = Path(output_path)
         staging_root = Path(work_dir) if work_dir else self.work_root_dir
         staging_root.mkdir(parents=True, exist_ok=True)
 
-        # 同時処理や中断再開でも衝突しない一意名を使う
         work_id = f"{final_output_path.stem}_{uuid4().hex}"
         staging_video_path = staging_root / f"{work_id}{final_output_path.suffix}"
+        staging_srt_path = staging_video_path.with_suffix('.srt')
 
-        # 一時音声ファイルパス生成（作業領域内）
         if temp_audio_path is None:
             temp_audio_path = str(staging_root / f"{work_id}.temp.wav")
 
         temp_audio = Path(temp_audio_path)
-        staging_srt_path = staging_video_path.with_suffix('.srt')
-        
+
         try:
-            # ステップ1: SRT解析
             print(f"SRTファイルを解析中: {srt_path}")
             entries = self.srt_parser.parse_srt(srt_path)
             print(f"{len(entries)}個の字幕エントリを検出")
-            
-            # ステップ2: 動画の長さを取得
+
             print(f"動画の長さを取得中: {video_path}")
             video_duration = self.video_combiner.get_video_duration(video_path)
             print(f"動画の長さ: {video_duration:.2f}秒")
-            
-            # ステップ3: 音声生成(自動話速調整あり)
-            print(f"音声を生成中...")
-            success, audio_duration = self.audio_generator.generate_audio_from_srt(
+
+            print("音声を生成中...")
+            success, _ = self.audio_generator.generate_audio_from_srt(
                 entries=entries,
                 output_path=temp_audio_path,
                 video_duration=video_duration,
@@ -197,10 +235,9 @@ class DubbingAutomation:
                 style=style,
                 style_weight=style_weight,
             )
-            
-            # ステップ4: 許容範囲を超えている場合は再生成
+
             if not success:
-                print(f"許容範囲を超えています。グローバル話速調整で再生成中...")
+                print("許容範囲を超えています。グローバル話速調整で再生成中...")
                 success = self.audio_generator.regenerate_with_global_adjustment(
                     entries=entries,
                     output_path=temp_audio_path,
@@ -209,13 +246,10 @@ class DubbingAutomation:
                     style=style,
                     style_weight=style_weight,
                 )
-                
                 if not success:
                     print("警告: 最速でも許容範囲内に収まりませんでした。そのまま結合します。")
-            
-            # ステップ5: 動画と音声を結合
-            print(f"動画と音声を結合中...")
-            
+
+            print("動画と音声を結合中...")
             self.video_combiner.combine_audio(
                 video_path=video_path,
                 audio_path=temp_audio_path,
@@ -226,29 +260,26 @@ class DubbingAutomation:
                 intro_duration=intro_duration,
             )
 
-            # ステップ6: SRTを作業領域へ複製
             try:
                 shutil.copy2(srt_path, staging_srt_path)
             except Exception as e:
                 print(f"⚠️ 字幕ファイルのステージングに失敗: {e}")
 
-            # ステップ7: 最終保存先へ配置（NAS等を想定して再試行あり）
-            self._deploy_file(staging_video_path, final_output_path)
-            print(f"動画ファイルを配置: {final_output_path}")
-
-            final_srt_path = final_output_path.with_suffix('.srt')
-            if staging_srt_path.exists():
-                self._deploy_file(staging_srt_path, final_srt_path)
-                print(f"字幕ファイルを配置: {final_srt_path}")
-
-            print(f"✅ 吹き替え動画作成完了: {final_output_path}")
-            return True
-            
+            return StagedDubResult(
+                final_output_path=final_output_path,
+                staging_video_path=staging_video_path,
+                staging_srt_path=staging_srt_path,
+            )
         except Exception as e:
             print(f"❌ エラーが発生しました: {e}")
+            for path in (staging_video_path, staging_srt_path):
+                if path.exists():
+                    try:
+                        path.unlink()
+                    except Exception:
+                        pass
             raise
         finally:
-            # 一時ファイル削除
             if temp_audio_path and temp_audio.exists():
                 try:
                     temp_audio.unlink()
@@ -256,14 +287,26 @@ class DubbingAutomation:
                 except Exception as e:
                     print(f"一時ファイル削除失敗: {e}")
 
-            if staging_video_path.exists():
-                try:
-                    staging_video_path.unlink()
-                except Exception:
-                    pass
+    def deploy_staged_output(self, staged: StagedDubResult) -> None:
+        """ローカル作業領域の成果物を最終保存先へ配置する。"""
 
-            if staging_srt_path.exists():
+        try:
+            self._deploy_file(staged.staging_video_path, staged.final_output_path)
+            print(f"動画ファイルを配置: {staged.final_output_path}")
+
+            final_srt_path = staged.final_output_path.with_suffix('.srt')
+            if staged.staging_srt_path.exists():
+                self._deploy_file(staged.staging_srt_path, final_srt_path)
+                print(f"字幕ファイルを配置: {final_srt_path}")
+        finally:
+            self.cleanup_staged_output(staged)
+
+    def cleanup_staged_output(self, staged: StagedDubResult) -> None:
+        """ステージング成果物を安全に削除する。"""
+
+        for path in (staged.staging_video_path, staged.staging_srt_path):
+            if path.exists():
                 try:
-                    staging_srt_path.unlink()
+                    path.unlink()
                 except Exception:
                     pass

@@ -13,9 +13,13 @@ import sys
 import re
 import shutil
 import configparser
-import os
 import argparse
+import time
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor, Future
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, Optional
 from loguru import logger
 
 # プロジェクトルートを自動検出
@@ -24,7 +28,7 @@ DUBBING_TOOLS_DIR = Path(__file__).parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 # 進捗管理モジュール
-from dubbing_tools.src.progress_manager import ProgressManager, ProcessingStatus
+from dubbing_tools.src.progress_manager import ProgressManager
 
 # ===== ロギング設定 =====
 logger.remove()
@@ -34,6 +38,61 @@ logger.add(
     level="INFO",
     colorize=True,
 )
+
+
+STAGED_TEMP_PATTERN = re.compile(r".*_[0-9a-f]{32}(?:\.mp4|\.srt|\.temp\.wav)$")
+
+
+@dataclass
+class DeployTask:
+    """I/O配置タスクの追跡情報。"""
+
+    future: Future[None]
+    output_path: str
+    display_name: str
+    staged_result: Optional[Any] = None
+
+
+def copy_video_passthrough(video_path: str, output_path: str) -> None:
+    """字幕なし動画を最終出力へコピーする（I/Oプール実行用）。"""
+
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(video_path, output_path)
+
+
+def cleanup_stale_workfiles(work_dir: Path, older_than_hours: int) -> int:
+    """前回中断などで残った一時成果物を掃除する。"""
+
+    if older_than_hours < 0:
+        older_than_hours = 0
+
+    if not work_dir.exists():
+        return 0
+
+    cutoff = time.time() - (older_than_hours * 3600)
+    removed = 0
+
+    for path in work_dir.rglob("*"):
+        if not path.is_file():
+            continue
+
+        name = path.name
+        is_temp_candidate = (
+            name.endswith(".part")
+            or name.endswith(".tmp")
+            or STAGED_TEMP_PATTERN.fullmatch(name) is not None
+        )
+        if not is_temp_candidate:
+            continue
+
+        try:
+            if path.stat().st_mtime <= cutoff:
+                path.unlink()
+                removed += 1
+        except Exception:
+            continue
+
+    return removed
 
 
 def is_continuation(filename: str) -> bool:
@@ -73,7 +132,7 @@ def is_continuation(filename: str) -> bool:
     return True
 
 
-def get_available_models():
+def get_available_models() -> list[str]:
     """利用可能なモデル一覧を取得"""
     model_dir = PROJECT_ROOT / "model_assets"
     if not model_dir.exists():
@@ -89,7 +148,7 @@ def get_available_models():
     return sorted(models)
 
 
-def select_model(models: list) -> str:
+def select_model(models: list[str]) -> str:
     """対話式でモデルを選択"""
     print("\n" + "=" * 50)
     print("🎤 話者（モデル）を選択してください")
@@ -120,7 +179,7 @@ def select_model(models: list) -> str:
             sys.exit(0)
 
 
-def load_config():
+def load_config() -> dict[str, Any]:
     """config.ini から設定を読み込む"""
     config_path = DUBBING_TOOLS_DIR / "config.ini"
     
@@ -135,6 +194,9 @@ def load_config():
         "audio_volume": 1.0,
         "original_volume": 0.3,
         "skip_existing": True,
+        "io_pool_workers": 2,
+        "io_queue_depth": 2,
+        "work_cleanup_hours": 24,
     }
     
     if not config_path.exists():
@@ -163,6 +225,9 @@ def load_config():
     # [processing]
     if config.has_section("processing"):
         settings["skip_existing"] = config.getboolean("processing", "skip_existing", fallback=settings["skip_existing"])
+        settings["io_pool_workers"] = config.getint("processing", "io_pool_workers", fallback=settings["io_pool_workers"])
+        settings["io_queue_depth"] = config.getint("processing", "io_queue_depth", fallback=settings["io_queue_depth"])
+        settings["work_cleanup_hours"] = config.getint("processing", "work_cleanup_hours", fallback=settings["work_cleanup_hours"])
     
     return settings
 
@@ -258,6 +323,10 @@ def main():
 
     # 作業領域は必ずローカルのプロジェクト配下を想定（NAS先で中間生成しない）
     work_dir.mkdir(parents=True, exist_ok=True)
+
+    removed_count = cleanup_stale_workfiles(work_dir, int(config.get("work_cleanup_hours", 24)))
+    if removed_count > 0:
+        print(f"🧹 前回の一時ファイルをクリーンアップ: {removed_count}件")
     
     # 進捗管理の初期化
     progress_manager = ProgressManager(str(output_dir))
@@ -275,6 +344,8 @@ def main():
             elif choice == "resume":
                 resume_mode = True
                 # 前回のモデル名を使用
+                if progress_manager.progress is None:
+                    raise RuntimeError("進捗情報の読み込みに失敗しました")
                 config["model_name"] = progress_manager.progress.model_name
                 print(f"\n✅ 前回のセッションから再開します（モデル: {config['model_name']}）\n")
         else:
@@ -300,6 +371,7 @@ def main():
     print(f"   出力: {output_dir}")
     print(f"   作業: {work_dir}")
     print(f"   デバイス: {config['device']}")
+    print(f"   I/Oプール: workers={config['io_pool_workers']} / queue_depth={config['io_queue_depth']}")
     print()
     
     # ファイルペアを検出（再開モードでない場合のみ）
@@ -382,71 +454,143 @@ def main():
     completed = 0
     failed = 0
     total = len(video_paths)
-    
-    try:
-        for i, (video_path, srt_path, output_path, copy_only) in enumerate(
-            zip(video_paths, srt_paths, output_paths, copy_only_flags), 1
-        ):
-            video_name = Path(video_path).name
-            filename_without_ext = Path(video_path).stem
-            print(f"[{i}/{total}] {video_name}")
-            
-            # 処理中としてマーク
-            progress_manager.mark_in_progress(output_path)
-            
-            try:
-                Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-                
-                if copy_only:
-                    # 字幕なし動画: そのままコピー
-                    print(f"  📋 字幕なし→動画をそのままコピーします")
-                    shutil.copy2(video_path, output_path)
-                else:
-                    # 字幕あり動画: 吹き替え処理
-                    # ファイル名が続編（xx-2以上）かどうかを判定
-                    is_sequel = is_continuation(filename_without_ext)
-                    overlay = config["overlay"]
-                    intro_duration = 0.0
-                    
-                    # 開始ファイル（1-1、02-1など）の場合、冒頭5秒のみ元音声を重ねる
-                    if not is_sequel:
-                        overlay = True
-                        intro_duration = 5.0
-                        print(f"  📝 冒頭5秒のみ元音声と吹き替え音声をミックスします")
-                    else:
-                        # 続編ファイル（1-2、02-2など）は吹き替え音声のみ
-                        overlay = False
-                        print(f"  📝 吹き替え音声のみを使用します（元音声なし）")
-                    
-                    automation.create_dubbed_video(
-                        video_path=video_path,
-                        srt_path=srt_path,
-                        output_path=output_path,
-                        work_dir=str(work_dir),
-                        overlay=overlay,
-                        audio_volume=config["audio_volume"],
-                        original_volume=config["original_volume"],
-                        intro_duration=intro_duration,
-                    )
-                
-                # 完了としてマーク
-                progress_manager.mark_completed(output_path)
-                completed += 1
-                print(f"  ✅ 完了\n")
-                
-            except Exception as e:
-                # 失敗としてマーク
-                progress_manager.mark_failed(output_path, str(e))
-                failed += 1
-                logger.error(f"処理エラー: {video_name}", exc_info=True)
-                print(f"  ❌ エラー: {e}\n")
+
+    io_workers = max(1, int(config.get("io_pool_workers", 2)))
+    io_queue_depth = max(1, int(config.get("io_queue_depth", 2)))
+    deploy_futures: deque[DeployTask] = deque()
+
+    def finalize_deploy_task(task: DeployTask) -> None:
+        """I/Oタスク1件の結果を進捗へ反映する。"""
+
+        nonlocal completed, failed
+
+        try:
+            task.future.result()
+            progress_manager.mark_completed(task.output_path)
+            completed += 1
+            print(f"  ✅ 完了（I/O配置済み）: {task.display_name}\n")
+        except Exception as e:
+            progress_manager.mark_failed(task.output_path, str(e))
+            failed += 1
+            logger.error(f"I/O配置エラー: {task.display_name}", exc_info=True)
+            print(f"  ❌ I/O配置エラー: {e}\n")
+
+    def flush_completed_deployments() -> None:
+        """完了済みのI/Oタスクだけを回収する。"""
+
+        while deploy_futures and deploy_futures[0].future.done():
+            task = deploy_futures.popleft()
+            finalize_deploy_task(task)
+
+    def wait_for_oldest_deployment() -> None:
+        """キュー圧迫時に最古のI/Oタスク1件だけ待機してスロットを空ける。"""
+
+        if not deploy_futures:
+            return
+
+        task = deploy_futures.popleft()
+        finalize_deploy_task(task)
+
+    def cancel_pending_deployments() -> int:
+        """未開始のI/Oタスクをキャンセルし、対応する一時成果物を掃除する。"""
+
+        canceled = 0
+        kept: deque[DeployTask] = deque()
+
+        while deploy_futures:
+            task = deploy_futures.popleft()
+            if task.future.cancel():
+                canceled += 1
+                if task.staged_result is not None:
+                    automation.cleanup_staged_output(task.staged_result)
                 continue
-                
-    except KeyboardInterrupt:
-        print("\n\n⚠️ 処理が中断されました")
-        print("💡 進捗は保存されています。次回起動時に続きから再開できます。")
-        progress_manager.print_summary()
-        return 1
+            kept.append(task)
+
+        deploy_futures.extend(kept)
+        return canceled
+    
+    io_pool = ThreadPoolExecutor(max_workers=io_workers, thread_name_prefix="dubbing-io")
+    try:
+        try:
+            for i, (video_path, srt_path, output_path, copy_only) in enumerate(
+                zip(video_paths, srt_paths, output_paths, copy_only_flags), 1
+            ):
+                video_name = Path(video_path).name
+                filename_without_ext = Path(video_path).stem
+                print(f"[{i}/{total}] {video_name}")
+
+                progress_manager.mark_in_progress(output_path)
+
+                try:
+                    if copy_only:
+                        print("  📋 字幕なし→動画コピーをI/Oプールへ投入します")
+                        future = io_pool.submit(copy_video_passthrough, video_path, output_path)
+                        deploy_futures.append(DeployTask(future=future, output_path=output_path, display_name=video_name))
+                    else:
+                        is_sequel = is_continuation(filename_without_ext)
+                        overlay = config["overlay"]
+                        intro_duration = 0.0
+
+                        if not is_sequel:
+                            overlay = True
+                            intro_duration = 5.0
+                            print("  📝 冒頭5秒のみ元音声と吹き替え音声をミックスします")
+                        else:
+                            overlay = False
+                            print("  📝 吹き替え音声のみを使用します（元音声なし）")
+
+                        staged = automation.create_dubbed_video_to_staging(
+                            video_path=video_path,
+                            srt_path=srt_path,
+                            output_path=output_path,
+                            work_dir=str(work_dir),
+                            overlay=overlay,
+                            audio_volume=config["audio_volume"],
+                            original_volume=config["original_volume"],
+                            intro_duration=intro_duration,
+                        )
+                        future = io_pool.submit(automation.deploy_staged_output, staged)
+                        deploy_futures.append(
+                            DeployTask(
+                                future=future,
+                                output_path=output_path,
+                                display_name=video_name,
+                                staged_result=staged,
+                            )
+                        )
+                        print("  📦 最終配置をI/Oプールへ投入しました（GPUは次の処理を継続）")
+
+                    flush_completed_deployments()
+                    while len(deploy_futures) > io_queue_depth:
+                        wait_for_oldest_deployment()
+
+                except Exception as e:
+                    progress_manager.mark_failed(output_path, str(e))
+                    failed += 1
+                    logger.error(f"処理エラー: {video_name}", exc_info=True)
+                    print(f"  ❌ エラー: {e}\n")
+                    continue
+
+            # 残タスクを回収
+            while deploy_futures:
+                wait_for_oldest_deployment()
+
+        except KeyboardInterrupt:
+            print("\n\n⚠️ 処理が中断されました")
+            print("⏳ 完了済みI/Oを反映し、未開始I/Oをキャンセルします...")
+            flush_completed_deployments()
+            canceled = cancel_pending_deployments()
+            io_pool.shutdown(wait=False, cancel_futures=True)
+            if canceled > 0:
+                print(f"🧹 キャンセル済みI/Oタスクの一時ファイルを掃除: {canceled}件")
+            print("💡 進捗は保存されています。次回起動時に続きから再開できます。")
+            progress_manager.print_summary()
+            return 1
+    finally:
+        # 保険: 例外経路でも完了済みタスクを可能な限り反映
+        flush_completed_deployments()
+        if 'io_pool' in locals():
+            io_pool.shutdown(wait=False, cancel_futures=False)
     
     # 結果表示
     print("=" * 60)
