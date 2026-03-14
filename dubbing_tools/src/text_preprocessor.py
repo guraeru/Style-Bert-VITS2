@@ -8,6 +8,7 @@ from __future__ import annotations
 import csv
 import re
 import requests
+import unicodedata
 from pathlib import Path
 from typing import Dict, Match, Optional
 import urllib.parse
@@ -16,7 +17,21 @@ import urllib.parse
 class TextPreprocessor:
     """読み方調整とカタカナ英語変換を担うクラス。"""
 
-    WORD_PATTERN = re.compile(r"[A-Za-z]+(?:'[A-Za-z]+)?")
+    # 辞書で扱う単語形式（英数字 + 内部ハイフン/アポストロフィ + 先頭アポストロフィ）を広く拾う
+    WORD_PATTERN = re.compile(r"(?<![A-Za-z0-9])['’]?[A-Za-z0-9]+(?:[-'][A-Za-z0-9]+)*(?![A-Za-z0-9])")
+
+    @staticmethod
+    def _resolve_default_csv(base_dir: Path, filename: str) -> Path:
+        """候補パスを優先順に探索し、最初に見つかったCSVを返す。"""
+
+        candidates = [
+            base_dir.parent / filename,
+            base_dir / filename,
+        ]
+        for candidate in candidates:
+            if candidate.exists():
+                return candidate
+        return candidates[-1]
 
     def __init__(
         self,
@@ -25,13 +40,15 @@ class TextPreprocessor:
     ) -> None:
         """設定ファイルを読み込んで辞書を初期化する。"""
 
+        base_dir = Path(__file__).parent
+
         if adjustments_csv is None:
-            adjustments_csv = Path(__file__).parent / "reading_adjustments.csv"
+            adjustments_csv = self._resolve_default_csv(base_dir, "reading_adjustments.csv")
         elif isinstance(adjustments_csv, str):
             adjustments_csv = Path(adjustments_csv)
 
         if english_dict_csv is None:
-            english_dict_csv = Path(__file__).parent / "english_katakana_dict.csv"
+            english_dict_csv = self._resolve_default_csv(base_dir, "english_katakana_dict.csv")
         elif isinstance(english_dict_csv, str):
             english_dict_csv = Path(english_dict_csv)
 
@@ -40,6 +57,9 @@ class TextPreprocessor:
 
     def convert_english_to_katakana(self, text: str) -> str:
         """英単語を辞書でカタカナに変換する。辞書にない単語はそのまま返す。"""
+
+        # 全角英数や互換文字を吸収し、辞書キーと同じ正規化規則で比較できるようにする
+        normalized_text = unicodedata.normalize("NFKC", text)
 
         def replace(match: Match[str]) -> str:
             english_word = match.group(0)
@@ -51,25 +71,33 @@ class TextPreprocessor:
             
             return english_word
 
-        return self.WORD_PATTERN.sub(replace, text)
+        return self.WORD_PATTERN.sub(replace, normalized_text)
 
+
+    @staticmethod
+    def _normalize_english_key(word: str) -> str:
+        """英語辞書キー比較用に、Unicode正規化 + apostrophe統一 + casefold を適用する。"""
+
+        normalized = unicodedata.normalize("NFKC", word).strip()
+        normalized = normalized.replace("’", "'")
+        return normalized.casefold()
 
     
     def _lookup_dictionary(self, english_word: str) -> Optional[str]:
         """辞書参照時に簡単な語尾ゆれを吸収する。"""
 
-        base = english_word.lower()
+        base = self._normalize_english_key(english_word)
         candidates = [base]
 
-        if base.endswith("'s"):
+        if re.fullmatch(r"[a-z]+'s", base):
             candidates.append(base[:-2])
-        if base.endswith("es"):
+        if re.fullmatch(r"[a-z]+es", base):
             candidates.append(base[:-2])
-        if base.endswith("s"):
+        if re.fullmatch(r"[a-z]+s", base):
             candidates.append(base[:-1])
-        if base.endswith("ed"):
+        if re.fullmatch(r"[a-z]+ed", base):
             candidates.append(base[:-2])
-        if base.endswith("ing"):
+        if re.fullmatch(r"[a-z]+ing", base):
             candidates.append(base[:-3])
 
         for candidate in candidates:
@@ -91,7 +119,7 @@ class TextPreprocessor:
         Returns:
             英単語→カタカナ辞書（キーは小文字）
         """
-        english_dict = {}
+        english_dict: dict[str, str] = {}
         
         if not csv_path.exists():
             print(f"[INFO] 英単語辞書ファイルが見つかりません: {csv_path}")
@@ -107,7 +135,7 @@ class TextPreprocessor:
                         continue
                     
                     if len(row) >= 2:
-                        english = row[0].strip().lower()  # 小文字で保存
+                        english = self._normalize_english_key(row[0])
                         katakana = row[1].strip()
                         if english and katakana:
                             english_dict[english] = katakana
@@ -132,7 +160,7 @@ class TextPreprocessor:
         Returns:
             読み方調整辞書
         """
-        adjustments = {}
+        adjustments: dict[str, str] = {}
         
         if not csv_path.exists():
             print(f"[INFO] 読み方調整ファイルが見つかりません: {csv_path}")

@@ -128,6 +128,7 @@ def load_config():
     settings = {
         "input_dir": "input_mp4",
         "output_dir": "output_mp4",
+        "work_dir": "temp/dubbing_work",
         "model_name": "jvnv-F1-jp",
         "device": "cuda",
         "overlay": True,
@@ -146,6 +147,7 @@ def load_config():
     if config.has_section("paths"):
         settings["input_dir"] = config.get("paths", "input_dir", fallback=settings["input_dir"])
         settings["output_dir"] = config.get("paths", "output_dir", fallback=settings["output_dir"])
+        settings["work_dir"] = config.get("paths", "work_dir", fallback=settings["work_dir"])
     
     # [model]
     if config.has_section("model"):
@@ -245,11 +247,17 @@ def main():
         input_dir = Path(config["input_dir"])
     
     output_dir = Path(config["output_dir"])
+    work_dir = Path(config["work_dir"])
     
     if not input_dir.is_absolute():
         input_dir = PROJECT_ROOT / input_dir
     if not output_dir.is_absolute():
         output_dir = PROJECT_ROOT / output_dir
+    if not work_dir.is_absolute():
+        work_dir = PROJECT_ROOT / work_dir
+
+    # 作業領域は必ずローカルのプロジェクト配下を想定（NAS先で中間生成しない）
+    work_dir.mkdir(parents=True, exist_ok=True)
     
     # 進捗管理の初期化
     progress_manager = ProgressManager(str(output_dir))
@@ -290,6 +298,7 @@ def main():
     print(f"   話者: {config['model_name']}")
     print(f"   入力: {input_dir}")
     print(f"   出力: {output_dir}")
+    print(f"   作業: {work_dir}")
     print(f"   デバイス: {config['device']}")
     print()
     
@@ -360,6 +369,7 @@ def main():
         automation = DubbingAutomation(
             model_name=config["model_name"],
             device=config["device"],
+            work_root_dir=str(work_dir),
         )
     except Exception as e:
         print(f"❌ モデル読み込みエラー: {e}")
@@ -412,6 +422,7 @@ def main():
                         video_path=video_path,
                         srt_path=srt_path,
                         output_path=output_path,
+                        work_dir=str(work_dir),
                         overlay=overlay,
                         audio_volume=config["audio_volume"],
                         original_volume=config["original_volume"],

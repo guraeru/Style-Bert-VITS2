@@ -5,6 +5,9 @@ SRT解析、音声生成、動画結合を統合したメインクラスです�
 """
 
 import os
+import shutil
+import time
+from uuid import uuid4
 from pathlib import Path
 from typing import Optional
 
@@ -32,6 +35,7 @@ class DubbingAutomation:
         ffmpeg_path: str = "ffmpeg",
         tolerance_seconds: float = 60.0,
         min_length_scale: float = 0.5,
+        work_root_dir: Optional[str] = None,
     ):
         """
         Args:
@@ -50,6 +54,14 @@ class DubbingAutomation:
         # → 親の親: dubbing_tools
         # → 親の親の親: プロジェクトルート
         project_root = Path(__file__).parent.parent.parent
+        if work_root_dir is None:
+            # デフォルトはプロジェクト相対temp配下を作業領域にする
+            self.work_root_dir = project_root / "temp" / "dubbing_work"
+        else:
+            self.work_root_dir = Path(work_root_dir)
+
+        self.work_root_dir.mkdir(parents=True, exist_ok=True)
+
         model_dir = project_root / "model_assets" / model_name
         model_path = None
         
@@ -88,6 +100,34 @@ class DubbingAutomation:
         )
         self.video_combiner = VideoCombiner(ffmpeg_path=ffmpeg_path)
         self.srt_parser = SRTParser()
+
+    @staticmethod
+    def _deploy_file(src_path: Path, dst_path: Path, max_retries: int = 3) -> None:
+        """別ファイルシステム間でも安全に最終配置する。"""
+
+        dst_path.parent.mkdir(parents=True, exist_ok=True)
+        part_path = dst_path.with_suffix(dst_path.suffix + ".part")
+
+        last_error: Optional[Exception] = None
+        for attempt in range(1, max_retries + 1):
+            try:
+                if part_path.exists():
+                    part_path.unlink()
+
+                shutil.copy2(src_path, part_path)
+                os.replace(part_path, dst_path)
+                return
+            except Exception as e:
+                last_error = e
+                if part_path.exists():
+                    try:
+                        part_path.unlink()
+                    except Exception:
+                        pass
+                if attempt < max_retries:
+                    time.sleep(0.5 * attempt)
+
+        raise RuntimeError(f"最終ファイル配置に失敗しました: {dst_path}") from last_error
     
     def create_dubbed_video(
         self,
@@ -95,6 +135,7 @@ class DubbingAutomation:
         srt_path: str,
         output_path: str,
         temp_audio_path: Optional[str] = None,
+        work_dir: Optional[str] = None,
         style: str = "Neutral",
         style_weight: float = 1.0,
         overlay: bool = False,
@@ -120,9 +161,20 @@ class DubbingAutomation:
         Returns:
             成功したらTrue
         """
-        # 一時音声ファイルパス生成
+        final_output_path = Path(output_path)
+        staging_root = Path(work_dir) if work_dir else self.work_root_dir
+        staging_root.mkdir(parents=True, exist_ok=True)
+
+        # 同時処理や中断再開でも衝突しない一意名を使う
+        work_id = f"{final_output_path.stem}_{uuid4().hex}"
+        staging_video_path = staging_root / f"{work_id}{final_output_path.suffix}"
+
+        # 一時音声ファイルパス生成（作業領域内）
         if temp_audio_path is None:
-            temp_audio_path = str(Path(output_path).with_suffix('.temp.wav'))
+            temp_audio_path = str(staging_root / f"{work_id}.temp.wav")
+
+        temp_audio = Path(temp_audio_path)
+        staging_srt_path = staging_video_path.with_suffix('.srt')
         
         try:
             # ステップ1: SRT解析
@@ -167,23 +219,29 @@ class DubbingAutomation:
             self.video_combiner.combine_audio(
                 video_path=video_path,
                 audio_path=temp_audio_path,
-                output_path=output_path,
+                output_path=str(staging_video_path),
                 overlay=overlay,
                 audio_volume=audio_volume,
                 original_volume=original_volume,
                 intro_duration=intro_duration,
             )
-            
-            # ステップ6: SRTファイルをそのままコピー
-            output_srt_path = str(Path(output_path).with_suffix('.srt'))
+
+            # ステップ6: SRTを作業領域へ複製
             try:
-                import shutil
-                shutil.copy2(srt_path, output_srt_path)
-                print(f"字幕ファイルをコピー: {output_srt_path}")
+                shutil.copy2(srt_path, staging_srt_path)
             except Exception as e:
-                print(f"⚠️ 字幕ファイルのコピーに失敗: {e}")
-            
-            print(f"✅ 吹き替え動画作成完了: {output_path}")
+                print(f"⚠️ 字幕ファイルのステージングに失敗: {e}")
+
+            # ステップ7: 最終保存先へ配置（NAS等を想定して再試行あり）
+            self._deploy_file(staging_video_path, final_output_path)
+            print(f"動画ファイルを配置: {final_output_path}")
+
+            final_srt_path = final_output_path.with_suffix('.srt')
+            if staging_srt_path.exists():
+                self._deploy_file(staging_srt_path, final_srt_path)
+                print(f"字幕ファイルを配置: {final_srt_path}")
+
+            print(f"✅ 吹き替え動画作成完了: {final_output_path}")
             return True
             
         except Exception as e:
@@ -191,9 +249,21 @@ class DubbingAutomation:
             raise
         finally:
             # 一時ファイル削除
-            if temp_audio_path and os.path.exists(temp_audio_path):
+            if temp_audio_path and temp_audio.exists():
                 try:
-                    os.remove(temp_audio_path)
-                    print(f"一時ファイル削除: {temp_audio_path}")
+                    temp_audio.unlink()
+                    print(f"一時ファイル削除: {temp_audio}")
                 except Exception as e:
                     print(f"一時ファイル削除失敗: {e}")
+
+            if staging_video_path.exists():
+                try:
+                    staging_video_path.unlink()
+                except Exception:
+                    pass
+
+            if staging_srt_path.exists():
+                try:
+                    staging_srt_path.unlink()
+                except Exception:
+                    pass
