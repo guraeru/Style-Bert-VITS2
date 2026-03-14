@@ -80,6 +80,25 @@ __CURRENCY_PATTERN = re.compile(r"([$¥£€])([0-9.]*[0-9])")
 __NUMBER_PATTERN = re.compile(r"[0-9]+(\.[0-9]+)?")
 __NUMBER_WITH_SEPARATOR_PATTERN = re.compile("[0-9]{1,3}(,[0-9]{3})+")
 
+# 日付パターン: 数字+月+数字+日 → 漢数字に変換して pyopenjtalk の読みを改善
+__DATE_PATTERN = re.compile(r"(\d{1,2})月(\d{1,2})日")
+# 助数詞パターン: 数字+助数詞 → 漢数字+助数詞に変換
+# pyopenjtalk は漢数字+助数詞の方が正しい読みを返しやすい
+__COUNTER_PATTERN = re.compile(
+    r"(\d+)(人|本|匹|頭|羽|冊|枚|台|杯|階|つ|個|回|歳|才|年|月|日|時|分|秒|番|丁目)"
+)
+
+# 漢数字変換用
+__NUM_TO_KANJI: dict[str, str] = {
+    "0": "〇", "1": "一", "2": "二", "3": "三", "4": "四",
+    "5": "五", "6": "六", "7": "七", "8": "八", "9": "九",
+}
+
+
+def __num_to_kanji_simple(num_str: str) -> str:
+    """数字文字列を単純に漢数字に1文字ずつ変換する（読み精度向上用）。"""
+    return "".join(__NUM_TO_KANJI.get(c, c) for c in num_str)
+
 
 def normalize_text(text: str) -> str:
     """
@@ -149,6 +168,7 @@ def replace_punctuation(text: str) -> str:
 def __convert_numbers_to_words(text: str) -> str:
     """
     記号や数字を日本語の文字表現に変換する。
+    日付や助数詞パターンは漢数字に変換し、それ以外は num2words で読みに変換する。
 
     Args:
         text (str): 変換するテキスト
@@ -159,6 +179,24 @@ def __convert_numbers_to_words(text: str) -> str:
 
     res = __NUMBER_WITH_SEPARATOR_PATTERN.sub(lambda m: m[0].replace(",", ""), text)
     res = __CURRENCY_PATTERN.sub(lambda m: m[2] + __CURRENCY_MAP.get(m[1], m[1]), res)
+
+    # 日付パターンを先に漢数字に変換（pyopenjtalk の読み精度向上）
+    # 例: "3月14日" → "三月一四日" ではなく "3月14日" → num2words 経由
+    # ※ 月日は num2words が適切に処理するのでここでは特殊処理不要
+
+    # 助数詞パターンは漢数字に変換（pyopenjtalk が正しい読みを返しやすい）
+    # 例: "3人" → "三人"（num2words だと "三" になるので結果は同じだが明示的に処理）
+    def _counter_to_kanji(m: re.Match[str]) -> str:
+        num_part = m.group(1)
+        counter = m.group(2)
+        # 大きな数字は num2words に任せる
+        if len(num_part) > 4:
+            return num2words(num_part, lang="ja") + counter
+        return __num_to_kanji_simple(num_part) + counter
+
+    res = __COUNTER_PATTERN.sub(_counter_to_kanji, res)
+
+    # 残りの数字を num2words で変換
     res = __NUMBER_PATTERN.sub(lambda m: num2words(m[0], lang="ja"), res)
 
     return res

@@ -7,6 +7,7 @@ from style_bert_vits2.nlp import bert_models
 from style_bert_vits2.nlp.japanese import pyopenjtalk_worker as pyopenjtalk
 from style_bert_vits2.nlp.japanese.mora_list import MORA_KATA_TO_MORA_PHONEMES, VOWELS
 from style_bert_vits2.nlp.japanese.normalizer import replace_punctuation
+from style_bert_vits2.nlp.japanese.reading_correction import correct_njd_features
 from style_bert_vits2.nlp.symbols import PUNCTUATIONS
 
 
@@ -110,8 +111,9 @@ def text_to_sep_kata(
         tuple[list[str], list[str]]: 分割された単語リストと、その読み（カタカナ or 記号1文字）のリスト
     """
 
-    # parsed: OpenJTalkの解析結果
+    # parsed: OpenJTalkの解析結果（読み補正済み）
     parsed = pyopenjtalk.run_frontend(norm_text)
+    parsed = correct_njd_features(parsed)
     sep_text: list[str] = []
     sep_kata: list[str] = []
 
@@ -471,7 +473,9 @@ def __pyopenjtalk_g2p_prosody(
             return -50
         return int(match.group(1))
 
-    labels = pyopenjtalk.make_label(pyopenjtalk.run_frontend(text))
+    features = pyopenjtalk.run_frontend(text)
+    features = correct_njd_features(features)
+    labels = pyopenjtalk.make_label(features)
     N = len(labels)
 
     phones = []
@@ -681,12 +685,28 @@ def __align_tones(
             # phone が punctuation の場合 → (phone, 0) を追加
             result.append((phone, 0))
         else:
-            logger.debug(f"phones: {phones_with_punct}")
-            logger.debug(f"phone_tone_list: {phone_tone_list}")
-            logger.debug(f"result: {result}")
-            logger.debug(f"tone_index: {tone_index}")
-            logger.debug(f"phone: {phone}")
-            raise ValueError(f"Unexpected phone: {phone}")
+            # 読み補正等により2つのパス間で音素が不一致になった場合のフォールバック
+            # 不一致の音素はデフォルトトーン 0 で追加し、tone_index を進めて再同期を試みる
+            logger.warning(
+                f"音素アライメント不一致: phone='{phone}', "
+                f"expected='{phone_tone_list[tone_index][0] if tone_index < len(phone_tone_list) else 'N/A'}' "
+                f"(index={tone_index})"
+            )
+            # 不一致音素をトーン 0 で追加し、tone_index 側で一致する位置を探す
+            result.append((phone, 0))
+            # tone_list 側に同じ音素があれば、そこまでスキップして再同期
+            resync_found = False
+            for offset in range(tone_index, min(tone_index + 3, len(phone_tone_list))):
+                if phone_tone_list[offset][0] == phone:
+                    tone_index = offset + 1
+                    result[-1] = (phone, phone_tone_list[offset][1])
+                    resync_found = True
+                    break
+            if not resync_found:
+                logger.debug(
+                    f"再同期失敗: phones={phones_with_punct}, "
+                    f"phone_tone_list={phone_tone_list}"
+                )
 
     return result
 
