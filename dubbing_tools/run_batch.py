@@ -42,6 +42,9 @@ logger.add(
 
 STAGED_TEMP_PATTERN = re.compile(r".*_[0-9a-f]{32}(?:\.mp4|\.srt|\.temp\.wav)$")
 
+# 除外対象フォルダー（先頭マッチ）
+EXCLUDED_FOLDER_PREFIX = "[CV宮舞モカ]"
+
 
 @dataclass
 class DeployTask:
@@ -186,7 +189,11 @@ def select_section_or_all(input_dir: Path) -> tuple[Optional[Path], str]:
     Returns:
         (選択されたinput_dir, mode)  mode = "all" | "section" | "cancel"
     """
-    subdirs = sorted([d for d in input_dir.iterdir() if d.is_dir() and not d.name.startswith('.')])
+    # セクションフォルダーを取得（除外フォルダーとドットで始まるフォルダーをスキップ）
+    subdirs = sorted([
+        d for d in input_dir.iterdir()
+        if d.is_dir() and not d.name.startswith('.') and not d.name.startswith(EXCLUDED_FOLDER_PREFIX)
+    ])
 
     if not subdirs:
         # サブディレクトリがなければ全処理のみ

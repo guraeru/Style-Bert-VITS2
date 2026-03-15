@@ -10,6 +10,9 @@ from pathlib import Path
 from typing import List, Dict, Tuple, Optional
 from dataclasses import dataclass
 
+# 除外対象フォルダー（先頭に含まれる名前でフィルタリング）
+EXCLUDED_FOLDERS = {"[CV宮舞モカ]"}
+
 
 @dataclass
 class VideoSRTPair:
@@ -24,19 +27,40 @@ class VideoSRTPair:
         return f"VideoSRTPair({Path(self.video_path).name}, {label})"
 
 
+def _is_excluded_folder(folder_path: Path) -> bool:
+    """
+    フォルダーが除外対象かチェック
+    
+    パスの各部分について、除外対象フォルダーの名前で始まるかを確認します。
+    
+    Args:
+        folder_path: チェック対象のフォルダーパス
+        
+    Returns:
+        除外対象ならTrue、そうでなければFalse
+    """
+    for part in folder_path.parts:
+        for excluded in EXCLUDED_FOLDERS:
+            if part.startswith(excluded):
+                return True
+    return False
+
+
 def _get_dirs_with_srt(input_path: Path, recursive: bool) -> set:
     """
     SRTファイルが1つでも存在するディレクトリの集合を返す。
     
     あるディレクトリにSRTがあれば、そのディレクトリは「翻訳対象の講座」とみなし、
     字幕なし動画も含めて全動画を処理対象とする。
+    
+    除外対象フォルダーに含まれるSRTは対象外とします。
     """
     if recursive:
         srt_files = list(input_path.rglob("*.srt"))
     else:
         srt_files = list(input_path.glob("*.srt"))
     
-    return {str(srt.parent) for srt in srt_files}
+    return {str(srt.parent) for srt in srt_files if not _is_excluded_folder(srt.parent)}
 
 
 def find_video_srt_pairs(
@@ -87,6 +111,10 @@ def find_video_srt_pairs(
     
     # 各動画ファイルを処理
     for video_file in video_files:
+        # 除外対象フォルダーかチェック
+        if _is_excluded_folder(video_file.parent):
+            continue
+        
         video_dir = str(video_file.parent)
         
         # このディレクトリにSRTが1つもなければスキップ（日本語講座）
