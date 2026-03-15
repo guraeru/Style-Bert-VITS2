@@ -206,6 +206,11 @@ class AudioGenerator:
             if text_to_speak != entry.text:
                 print(f"  [{entry.index}] テキスト変換(英語→カタカナ): {entry.text} → {text_to_speak}")
 
+        # テキストが空の場合は無音を返す（TTSモデルが空文字列で失敗するため）
+        if not text_to_speak.strip():
+            print(f"  [{entry.index}] テキストが空のため無音を生成します")
+            return self.generate_silence(max(entry.duration, 0.05))
+
         target_duration = max(entry.duration, 0.05)
         text_units = self._text_units(text_to_speak)
 
