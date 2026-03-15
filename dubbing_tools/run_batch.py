@@ -510,6 +510,7 @@ def main():
         return canceled
     
     io_pool = ThreadPoolExecutor(max_workers=io_workers, thread_name_prefix="dubbing-io")
+    _interrupted = False
     try:
         try:
             for i, (video_path, srt_path, output_path, copy_only) in enumerate(
@@ -576,6 +577,7 @@ def main():
                 wait_for_oldest_deployment()
 
         except KeyboardInterrupt:
+            _interrupted = True
             print("\n\n⚠️ 処理が中断されました")
             print("⏳ 完了済みI/Oを反映し、未開始I/Oをキャンセルします...")
             flush_completed_deployments()
@@ -583,12 +585,17 @@ def main():
             io_pool.shutdown(wait=False, cancel_futures=True)
             if canceled > 0:
                 print(f"🧹 キャンセル済みI/Oタスクの一時ファイルを掃除: {canceled}件")
+            # 中断されたアイテムをpendingに戻し、次回再試行できるようにする
+            reset_count = progress_manager.reset_in_progress_to_pending()
+            if reset_count > 0:
+                print(f"🔄 処理中だったアイテムを未処理に戻しました: {reset_count}件")
             print("💡 進捗は保存されています。次回起動時に続きから再開できます。")
             progress_manager.print_summary()
             return 1
     finally:
-        # 保険: 例外経路でも完了済みタスクを可能な限り反映
-        flush_completed_deployments()
+        if not _interrupted:
+            # 保険: 例外経路でも完了済みタスクを可能な限り反映
+            flush_completed_deployments()
         if 'io_pool' in locals():
             io_pool.shutdown(wait=False, cancel_futures=False)
     

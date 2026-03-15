@@ -289,6 +289,22 @@ class ProgressManager:
         
         self.save_progress()
     
+    def reset_in_progress_to_pending(self) -> int:
+        """処理中ステータスのファイルを未処理に戻す（中断時の残務整理）"""
+        if self.progress is None:
+            return 0
+
+        count = 0
+        for f in self.progress.files:
+            if f.status == ProcessingStatus.IN_PROGRESS.value:
+                f.status = ProcessingStatus.PENDING.value
+                f.started_at = None
+                count += 1
+
+        if count > 0:
+            self.save_progress()
+        return count
+
     def clear_progress(self) -> None:
         """進捗ファイルを削除"""
         if self.progress_file.exists():
