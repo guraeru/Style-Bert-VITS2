@@ -1,11 +1,11 @@
 """
-バッチ吹き替え処理 - メインエントリーポイント
+吹き替え処理 - メインエントリーポイント
 
 使用方法:
-    python dubbing_tools/run_batch.py
-    python dubbing_tools/run_batch.py --path "C:\\path\\to\\directory"
+    python dubbing_tools/run_batch.py                    # 対話式で全/単一セクション選択
+    python dubbing_tools/run_batch.py --path "C:\\path"  # 指定パスを直接処理
     
-話者を選択式で選んで一括処理を開始します。
+話者を選択式で選んで処理を開始します。
 中断しても .dubbing_progress.json を使って続きから再開できます。
 """
 
@@ -179,6 +179,71 @@ def select_model(models: list[str]) -> str:
             sys.exit(0)
 
 
+def select_section_or_all(input_dir: Path) -> tuple[Optional[Path], str]:
+    """
+    全セクション処理か単一セクション選択かを対話式で決定する。
+
+    Returns:
+        (選択されたinput_dir, mode)  mode = "all" | "section" | "cancel"
+    """
+    subdirs = sorted([d for d in input_dir.iterdir() if d.is_dir() and not d.name.startswith('.')])
+
+    if not subdirs:
+        # サブディレクトリがなければ全処理のみ
+        return input_dir, "all"
+
+    print("\n" + "=" * 60)
+    print("📂 処理モードを選択してください")
+    print("=" * 60)
+    print("  [1] 全セクションを一括処理する")
+    print("  [2] 特定のセクションを選んで処理する")
+    print()
+
+    while True:
+        try:
+            mode_choice = input("番号を入力 > ").strip()
+            if mode_choice == "1":
+                return input_dir, "all"
+            elif mode_choice == "2":
+                break
+            else:
+                print("❌ 1 か 2 を入力してください。")
+        except KeyboardInterrupt:
+            print("\n\nキャンセルしました。")
+            return None, "cancel"
+
+    # セクション一覧を表示
+    print("\n" + "=" * 60)
+    print("📂 処理するセクションを選んでください")
+    print("=" * 60)
+    print()
+
+    for i, d in enumerate(subdirs, 1):
+        mp4_count = len(list(d.rglob("*.mp4")))
+        srt_count = len(list(d.rglob("*.srt")))
+        print(f"  [{i}] {d.name}  ({mp4_count}個の動画, {srt_count}個の字幕)")
+
+    print()
+
+    while True:
+        try:
+            choice = input("番号を入力 > ").strip()
+            if not choice:
+                continue
+            idx = int(choice) - 1
+            if 0 <= idx < len(subdirs):
+                selected = subdirs[idx]
+                print(f"\n✅ 選択: {selected.name}\n")
+                return selected, "section"
+            else:
+                print("❌ 無効な番号です。もう一度入力してください。")
+        except ValueError:
+            print("❌ 数字を入力してください。")
+        except KeyboardInterrupt:
+            print("\n\nキャンセルしました。")
+            return None, "cancel"
+
+
 def load_config() -> dict[str, Any]:
     """config.ini から設定を読み込む"""
     config_path = DUBBING_TOOLS_DIR / "config.ini"
@@ -284,7 +349,7 @@ def ask_resume_or_new(progress_manager: ProgressManager) -> str:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="バッチで複数セクションの吹き替え処理を実行します",
+        description="吹き替え処理を実行します（全セクション一括 or 単一セクション選択）",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 使用例:
@@ -298,7 +363,7 @@ def main():
     args = parser.parse_args()
     
     print("\n" + "=" * 60)
-    print("🎬 Style-Bert-VITS2 吹き替えバッチ処理")
+    print("🎬 Style-Bert-VITS2 吹き替え処理")
     print("   (中断しても続きから再開できます)")
     print("=" * 60)
     
@@ -321,6 +386,19 @@ def main():
     if not work_dir.is_absolute():
         work_dir = PROJECT_ROOT / work_dir
 
+    # --path 未指定時のみセクション選択UIを表示
+    if not args.path:
+        if not input_dir.exists():
+            print(f"❌ 入力ディレクトリが見つかりません: {input_dir}")
+            return 1
+        selected, mode = select_section_or_all(input_dir)
+        if mode == "cancel":
+            return 0
+        if mode == "section":
+            # 選択セクションのみ処理。出力先にもセクション名を付加
+            input_dir = selected
+            output_dir = output_dir / selected.name
+
     # 作業領域は必ずローカルのプロジェクト配下を想定（NAS先で中間生成しない）
     work_dir.mkdir(parents=True, exist_ok=True)
 
@@ -328,7 +406,7 @@ def main():
     if removed_count > 0:
         print(f"🧹 前回の一時ファイルをクリーンアップ: {removed_count}件")
     
-    # 進捗管理の初期化
+    # 進捗管理の初期化（input_dir/output_dir確定後）
     progress_manager = ProgressManager(str(output_dir))
     
     # 既存の進捗があるか確認
