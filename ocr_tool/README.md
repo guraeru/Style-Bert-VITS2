@@ -1,29 +1,42 @@
-# OCR読み上げツール
+# OCR読み上げツール（スタンドアロン版）
 
-Style-Bert-VITS2プロジェクト用のOCR読み上げツールです。
+Style-Bert-VITS2プロジェクト用のOCR読み上げツールです。  
+このフォルダ単体で動作します。
 
-## 機能
+## フォルダ構成
 
-- **ハイブリッドOCR**: Tesseractで文字種判定 → EasyOCR/Tesseractで抽出
-- **自動読み上げ**: Style-Bert-VITS2を使用して抽出したテキストを音声化
-- **ホットキー対応**: Shift+F9で画面上の任意の領域をOCR
+```
+ocr_tool/
+├── run_ocr.bat              # 起動バッチ
+├── setup.bat                # 初回セットアップ
+├── ocr_tool.py              # メインスクリプト
+├── OCR.py                   # OCRエンジンクラス群
+├── text_preprocessor.py     # 英語→カタカナ変換
+├── english_katakana_dict.csv # 英語→カタカナ辞書
+├── reading_adjustments.csv  # 読み方調整辞書
+├── settings.ini             # 設定ファイル
+└── README.md
+```
 
 ## 必要な環境
 
-### 1. Tesseract OCR
+### 1. Style-Bert-VITS2 本体
+- venv環境と `style_bert_vits2` パッケージ、`model_assets/` が必要です
+- `settings.ini` の `project_root` にインストール先パスを設定してください
+
+### 2. Tesseract OCR
 - インストール先: `C:\Program Files\Tesseract-OCR\tesseract.exe`
 - ダウンロード: https://github.com/UB-Mannheim/tesseract/wiki
 - 日本語データパック（jpn.traineddata）を含めてインストール
 
 ### 2. Pythonパッケージ
-venv環境にインストールしてください:
+Style-Bert-VITS2のvenv環境にインストールしてください:
 ```bash
-venv\Scripts\activate
-pip install easyocr pytesseract pillow opencv-python pynput pygame
+setup.bat
 ```
 
 ### 3. TTSモデル
-- `model_assets/ui_speaker/` に以下のファイルが必要:
+- `<project_root>/model_assets/<model_name>/` に以下のファイルが必要:
   - `config.json`
   - `*.safetensors` (モデルファイル)
   - `style_vectors.npy`
@@ -31,9 +44,13 @@ pip install easyocr pytesseract pillow opencv-python pynput pygame
 ## 設定
 
 ### settings.ini
-`ocr_tool/settings.ini` で各種設定をカスタマイズできます:
+`settings.ini` で各種設定をカスタマイズできます:
 
 ```ini
+[General]
+# Style-Bert-VITS2のルートディレクトリ（絶対パス）
+project_root = C:\path\to\Style-Bert-VITS2
+
 [TTS]
 # 使用するモデル（model_assets内のフォルダ名）
 model_name = merge_shigureui
@@ -58,10 +75,11 @@ require_alt = False
 
 ### 初回セットアップ
 ```bash
-# 1. 必要なパッケージをインストール
+# 1. settings.ini を編集して project_root を設定
+# 2. 必要なパッケージをインストール
 setup.bat
 
-# 2. Tesseract OCRをインストール（まだの場合）
+# 3. Tesseract OCRをインストール（まだの場合）
 # https://github.com/UB-Mannheim/tesseract/wiki からダウンロード
 # インストール先: C:\Program Files\Tesseract-OCR\
 ```
@@ -71,7 +89,7 @@ setup.bat
 # バッチファイルから起動（推奨）
 run_ocr.bat
 
-# または直接Pythonで起動
+# または直接Pythonで起動（venvをactivate済みの場合）
 python ocr_tool.py
 ```
 

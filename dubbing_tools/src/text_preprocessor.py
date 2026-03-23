@@ -21,9 +21,12 @@ class TextPreprocessor:
     WORD_PATTERN = re.compile(
         r"(?<![A-Za-z0-9])['’]?[A-Za-z0-9]+(?:[._:/+\-][A-Za-z0-9]+|[-'][A-Za-z0-9]+)*(?![A-Za-z0-9])"
     )
-    # 英字/数字/区切り記号の境界で分割する（blender4.0.0 -> blender | 4.0.0）
+    # 英字/数字/区切り記号/CamelCase の境界で分割する
+    # （blender4.0.0 -> blender | 4.0.0, SpaceLeft -> Space | Left）
     TOKEN_SPLIT_BOUNDARY = re.compile(
-        r"(?<=[A-Za-z])(?=\d)"
+        r"(?<=[a-z0-9])(?=[A-Z])"          # CamelCase: 小文字/数字→大文字
+        r"|(?<=[A-Z])(?=[A-Z][a-z])"       # CamelCase: 大文字連続→大文字+小文字 (XMLParser→XML|Parser)
+        r"|(?<=[A-Za-z])(?=\d)"
         r"|(?<=\d)(?=[A-Za-z])"
         r"|(?<=[A-Za-z0-9])(?=[_:/+\-])"
         r"|(?<=[_:/+\-])(?=[A-Za-z0-9])"
@@ -100,11 +103,21 @@ class TextPreprocessor:
             return token
 
         converted_parts: list[str] = []
+        prev_was_word = False
         for part in parts:
-            if re.fullmatch(r"[A-Za-z]+(?:[-'][A-Za-z]+)*", part):
+            is_word = bool(re.fullmatch(r"[A-Za-z]+(?:[-'][A-Za-z]+)*", part))
+
+            # CamelCase分割などで連続する英単語パーツ間にスペースを挿入
+            if is_word and prev_was_word and converted_parts:
+                converted_parts.append(" ")
+
+            if is_word:
                 katakana = self._lookup_dictionary(part)
                 converted_parts.append(katakana if katakana else part)
+                prev_was_word = True
                 continue
+
+            prev_was_word = False
 
             if self.VERSION_NUMBER_PATTERN.fullmatch(part):
                 # 4.0.0 のようなバージョンは点区切り読みへ寄せる

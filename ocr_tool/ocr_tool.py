@@ -13,33 +13,41 @@ from ctypes import windll
 import sys
 import os
 from pathlib import Path
+import configparser
 
-# プロジェクトのルートディレクトリをパスに追加
-parent_dir = str(Path(__file__).parent.parent)
-if parent_dir not in sys.path:
-    sys.path.insert(0, parent_dir)
+# === パス解決: settings.ini の project_root からプロジェクトルートを取得 ===
+_ocr_dir = Path(__file__).parent
+_settings_cfg = configparser.ConfigParser()
+_settings_cfg.read(_ocr_dir / "settings.ini", encoding="utf-8")
+_project_root = _settings_cfg.get("General", "project_root", fallback="")
+if not _project_root:
+    _project_root = str(_ocr_dir.parent)
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
 
 # Style-Bert-VITS2のTTSを使用
 from style_bert_vits2.tts_model import TTSModel
 
-# 英語→カタカナ変換用のテキストプリプロセッサをインポート
+# 英語→カタカナ変換用のテキストプリプロセッサをインポート（ローカルコピー優先）
 try:
-    from dubbing_tools.text_preprocessor import TextPreprocessor
+    from text_preprocessor import TextPreprocessor
     text_preprocessor = TextPreprocessor()
     print("✅ テキストプリプロセッサを初期化しました（英語→カタカナ変換有効）")
-except Exception as e:
-    print(f"⚠️ テキストプリプロセッサの初期化に失敗しました: {e}")
-    text_preprocessor = None
+except Exception:
+    try:
+        from dubbing_tools.text_preprocessor import TextPreprocessor
+        text_preprocessor = TextPreprocessor()
+        print("✅ テキストプリプロセッサを初期化しました（英語→カタカナ変換有効）")
+    except Exception as e:
+        print(f"⚠️ テキストプリプロセッサの初期化に失敗しました: {e}")
+        text_preprocessor = None
 
 scale_factor = windll.shcore.GetScaleFactorForDevice(0) / 100.0
-
-# 設定ファイルの読み込み
-import configparser
 
 def load_settings():
     """settings.iniから設定を読み込む"""
     config = configparser.ConfigParser()
-    settings_path = Path(__file__).parent / "settings.ini"
+    settings_path = _ocr_dir / "settings.ini"
     
     # デフォルト設定
     default_settings = {
@@ -433,7 +441,7 @@ def initialize_tools():
         
         # TTSモデル初期化
         print(f"\nTTSモデルを初期化中: {MODEL_NAME}")
-        model_assets_dir = Path(parent_dir) / "model_assets" / MODEL_NAME
+        model_assets_dir = Path(_project_root) / "model_assets" / MODEL_NAME
         
         # モデルファイルを自動検索
         config_path = None
