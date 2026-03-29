@@ -63,8 +63,8 @@ __REPLACE_MAP = {
 __REPLACE_PATTERN = re.compile("|".join(re.escape(p) for p in __REPLACE_MAP))
 # 句読点等の正規化パターン
 __PUNCTUATION_CLEANUP_PATTERN = re.compile(
-    # ↓ ひらがな、カタカナ、漢字
-    r"[^\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF\u3400-\u4DBF\u3005"
+    # ↓ ひらがな、カタカナ、漢字、〇(U+3007)
+    r"[^\u3005-\u3007\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF\u3400-\u4DBF"
     # ↓ 半角アルファベット（大文字と小文字）
     + r"\u0041-\u005A\u0061-\u007A"
     # ↓ 全角アルファベット（大文字と小文字）
@@ -186,11 +186,16 @@ def __convert_numbers_to_words(text: str) -> str:
 
     # 助数詞パターンは漢数字に変換（pyopenjtalk が正しい読みを返しやすい）
     # 例: "3人" → "三人"（num2words だと "三" になるので結果は同じだが明示的に処理）
+    # 年・月・日・時・分・秒は位取りが必要なので num2words で変換する
+    # 例: "2013年" → "二千十三年"（__num_to_kanji_simple だと "二〇一三年" になり、
+    #     〇が除去されて "二一三年"→"二百十三年" と誤読される）
+    __NUM2WORDS_COUNTERS = {"年", "月", "日", "時", "分", "秒"}
+
     def _counter_to_kanji(m: re.Match[str]) -> str:
         num_part = m.group(1)
         counter = m.group(2)
-        # 大きな数字は num2words に任せる
-        if len(num_part) > 4:
+        # 大きな数字または位取りが必要な助数詞は num2words に任せる
+        if len(num_part) > 4 or counter in __NUM2WORDS_COUNTERS:
             return num2words(num_part, lang="ja") + counter
         return __num_to_kanji_simple(num_part) + counter
 
