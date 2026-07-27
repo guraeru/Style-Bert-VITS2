@@ -9,11 +9,54 @@ import tkinter as tk
 import pytesseract
 import time
 from pynput import keyboard 
+import ctypes
 from ctypes import windll
 import sys
 import os
 from pathlib import Path
 import configparser
+
+# === マルチモニター対応: プロセスをDPI Awareにする ===
+# これを設定しないとWindowsが座標を仮想的にスケーリングしてしまい、
+# プライマリモニター以外での選択範囲やキャプチャ座標がズレる原因になる。
+# Tkウィンドウなど、GUIを作成する前に一度だけ呼び出す必要がある。
+def _set_dpi_awareness():
+    try:
+        # Per-Monitor DPI Aware V2 (Windows 10 1703以降で最も正確)
+        windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
+        return True
+    except Exception:
+        pass
+    try:
+        # Per-Monitor DPI Aware (Windows 8.1以降)
+        windll.shcore.SetProcessDpiAwareness(2)
+        return True
+    except Exception:
+        pass
+    try:
+        # System DPI Aware (フォールバック)
+        windll.user32.SetProcessDPIAware()
+        return True
+    except Exception:
+        return False
+
+_DPI_AWARE = _set_dpi_awareness()
+
+# 仮想スクリーン（全モニターを含む領域）の座標・サイズを取得する定数
+_SM_XVIRTUALSCREEN = 76
+_SM_YVIRTUALSCREEN = 77
+_SM_CXVIRTUALSCREEN = 78
+_SM_CYVIRTUALSCREEN = 79
+
+def get_virtual_screen_rect():
+    """ 全モニターを合わせた仮想スクリーンの (x, y, width, height) を返す。
+    サブモニターがプライマリモニターの左/上にある場合、x, yは負の値になり得る。 """
+    user32 = windll.user32
+    x = user32.GetSystemMetrics(_SM_XVIRTUALSCREEN)
+    y = user32.GetSystemMetrics(_SM_YVIRTUALSCREEN)
+    w = user32.GetSystemMetrics(_SM_CXVIRTUALSCREEN)
+    h = user32.GetSystemMetrics(_SM_CYVIRTUALSCREEN)
+    return x, y, w, h
 
 # === パス解決: settings.ini の project_root からプロジェクトルートを取得 ===
 _ocr_dir = Path(__file__).parent
@@ -250,21 +293,28 @@ def speak_with_style_bert_vits2(text_to_speak: str):
 # ==============================================================================
 class ScreenCaptureTool:
     def select_screen_area(self):
-        """ DPI対策と *2 座標修正を組み込んだ、スクリーン座標取得プロセス。 """
+        """ DPI対策と複数モニター対応を組み込んだ、スクリーン座標取得プロセス。
+        '-fullscreen'属性はプライマリモニターにしか対応しないため使用せず、
+        全モニターを合わせた仮想スクリーン全体にウィンドウを配置する。 """
+        vx, vy, vw, vh = get_virtual_screen_rect()
+
         root = tk.Tk()
         try:
             # DPIスケールをリセット
             root.tk.call('tk', 'scaling', 1.0) 
         except Exception:
              pass 
-             
+
+        # 枠なしウィンドウを仮想スクリーン全体（全モニター）に配置
+        root.overrideredirect(True)
+        root.geometry(f"{vw}x{vh}+{vx}+{vy}")
+
         root.lift()
         root.attributes('-topmost', True) 
         root.attributes('-topmost', False) 
         root.attributes('-topmost', True) 
 
         root.attributes('-alpha', 0.3)
-        root.attributes('-fullscreen', True)
         root.title("ドラッグして領域を選択 (Escでキャンセル)")
         
         canvas = tk.Canvas(root, cursor="cross", bg='gray')
@@ -300,15 +350,26 @@ class ScreenCaptureTool:
         root.mainloop()
         root.destroy()
 
-        # WindowsのDPIスケーリング対策として座標を適用
-        x1, y1 = min(start_x, end_x) * scale_factor, min(start_y, end_y) * scale_factor
-        x2, y2 = max(start_x, end_x) * scale_factor, max(start_y, end_y) * scale_factor
-        
-        return (x1, y1, x2, y2)
+        # ウィンドウ内の相対座標(canvas座標)を仮想スクリーン上の絶対座標に変換
+        if _DPI_AWARE:
+            # プロセスがDPI Awareな場合、Tkの座標はそのまま物理ピクセルに対応する
+            rel_x1, rel_y1 = min(start_x, end_x), min(start_y, end_y)
+            rel_x2, rel_y2 = max(start_x, end_x), max(start_y, end_y)
+        else:
+            # フォールバック: 従来通りのDPIスケーリング補正（プライマリモニターのみ正確）
+            rel_x1, rel_y1 = min(start_x, end_x) * scale_factor, min(start_y, end_y) * scale_factor
+            rel_x2, rel_y2 = max(start_x, end_x) * scale_factor, max(start_y, end_y) * scale_factor
+
+        x1, y1 = vx + rel_x1, vy + rel_y1
+        x2, y2 = vx + rel_x2, vy + rel_y2
+
+        return (int(x1), int(y1), int(x2), int(y2))
 
     def capture_screen_area(self, coords):
-        """ 指定された画面領域をキャプチャし、OpenCV形式（BGR）の画像として返す。 """
-        img = ImageGrab.grab(bbox=coords)
+        """ 指定された画面領域をキャプチャし、OpenCV形式（BGR）の画像として返す。
+        all_screens=True にすることで、プライマリモニター以外の領域や
+        負の座標（サブモニターがプライマリの左/上にある場合）も正しくキャプチャできる。 """
+        img = ImageGrab.grab(bbox=coords, all_screens=True)
         img_np = np.array(img)
         img_cv = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
         return img_cv
