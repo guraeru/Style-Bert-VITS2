@@ -28,7 +28,7 @@ DUBBING_TOOLS_DIR = Path(__file__).parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 # 進捗管理モジュール
-from dubbing_tools.src.progress_manager import ProgressManager
+from src.progress_manager import ProgressManager
 
 # ===== ロギング設定 =====
 logger.remove()
@@ -519,7 +519,7 @@ def main():
         return 0
     
     # モデルを初期化
-    from dubbing_tools.src.dubbing_automation import DubbingAutomation
+    from src.dubbing_automation import DubbingAutomation
     
     print("\n🤖 モデルを読み込み中...")
     try:

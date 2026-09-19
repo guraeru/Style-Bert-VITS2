@@ -94,7 +94,7 @@ def load_settings():
     
     # デフォルト設定
     default_settings = {
-        'TTS': {'model_name': 'ui_speaker'}
+        'TTS': {'model_name': 'ui_speaker', 'volume': '1.0'}
     }
     
     if settings_path.exists():
@@ -116,6 +116,14 @@ settings = load_settings()
 
 # 設定から値を取得
 MODEL_NAME = settings.get('TTS', 'model_name', fallback='ui_speaker')
+
+# 読み上げ音量（0.0〜1.0の範囲にクランプ）
+try:
+    VOLUME = settings.getfloat('TTS', 'volume', fallback=1.0)
+except ValueError:
+    print("⚠️ settings.iniのvolume値が不正です。デフォルト値(1.0)を使用します。")
+    VOLUME = 1.0
+VOLUME = max(0.0, min(1.0, VOLUME))
 
 # Tesseractのパスはシステム環境変数に設定することを推奨しますが、今回はコード内の定義を維持します
 TESSERACT_CMD = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
@@ -275,6 +283,7 @@ def speak_with_style_bert_vits2(text_to_speak: str):
         # pygame で再生
         pygame.mixer.init()
         pygame.mixer.music.load(tmp_path)
+        pygame.mixer.music.set_volume(VOLUME)
         pygame.mixer.music.play()
         
         while pygame.mixer.music.get_busy():
