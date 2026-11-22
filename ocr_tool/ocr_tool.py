@@ -16,6 +16,7 @@ import sys
 import os
 from pathlib import Path
 import configparser
+import re
 
 # === マルチモニター対応: プロセスをDPI Awareにする ===
 # これを設定しないとWindowsが座標を仮想的にスケーリングしてしまい、
@@ -262,6 +263,21 @@ def speak_with_style_bert_vits2(text_to_speak: str):
         finally:
             with state_lock:
                 speech_active = False
+
+
+_INVISIBLE_LAYOUT_CHARS = str.maketrans("", "", "\u00ad\u200b\u2060\ufeff")
+
+
+def _join_ocr_words(text: str) -> str:
+    # 改行・タブ・字下げをまとめ、半角・全角の欧文同士にだけ空白を残す。
+    single_line = " ".join(text.split())
+    return re.sub(r"(?<![!-~！-～]) | (?![!-~！-～])", "", single_line)
+
+
+def normalize_ocr_speech_text(text: str) -> str:
+    """折り返しをつないでから読み方辞書を適用し、音声合成用の一行にする。"""
+    joined = _join_ocr_words(text.translate(_INVISIBLE_LAYOUT_CHARS))
+    return _join_ocr_words(text_preprocessor.preprocess(joined))
 
 # ==============================================================================
 # 画面選択とキャプチャ用クラス
@@ -570,7 +586,7 @@ def main_ocr_process():
         return extracted_text
 
     # SRT の entry.text と同じ前処理を、OCR の抽出結果に一度だけ適用する。
-    text_to_speak = text_preprocessor.preprocess(extracted_text)
+    text_to_speak = normalize_ocr_speech_text(extracted_text)
     if text_to_speak != extracted_text:
         print("\n--- 読み上げ用テキスト変換 ---")
         print(f"変換前: {extracted_text}")
