@@ -35,19 +35,6 @@ class TextPreprocessor:
     )
     VERSION_NUMBER_PATTERN = re.compile(r"^\d+(?:\.\d+)+$")
 
-    @staticmethod
-    def _resolve_default_csv(base_dir: Path, filename: str) -> Path:
-        """候補パスを優先順に探索し、最初に見つかったCSVを返す。"""
-
-        candidates = [
-            base_dir.parent / filename,
-            base_dir / filename,
-        ]
-        for candidate in candidates:
-            if candidate.exists():
-                return candidate
-        return candidates[-1]
-
     def __init__(
         self,
         adjustments_csv: Optional[Path] = None,
@@ -55,15 +42,15 @@ class TextPreprocessor:
     ) -> None:
         """設定ファイルを読み込んで辞書を初期化する。"""
 
-        base_dir = Path(__file__).parent
+        dictionary_dir = Path(__file__).resolve().parents[2] / "dictionary"
 
         if adjustments_csv is None:
-            adjustments_csv = self._resolve_default_csv(base_dir, "reading_adjustments.csv")
+            adjustments_csv = dictionary_dir / "reading_adjustments.csv"
         elif isinstance(adjustments_csv, str):
             adjustments_csv = Path(adjustments_csv)
 
         if english_dict_csv is None:
-            english_dict_csv = self._resolve_default_csv(base_dir, "english_katakana_dict.csv")
+            english_dict_csv = dictionary_dir / "english_katakana_dict.csv"
         elif isinstance(english_dict_csv, str):
             english_dict_csv = Path(english_dict_csv)
 

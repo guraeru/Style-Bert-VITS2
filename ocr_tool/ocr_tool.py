@@ -7,7 +7,8 @@ import cv2
 from PIL import ImageGrab, Image 
 import tkinter as tk
 import pytesseract
-import time
+from queue import Empty, Queue
+from threading import Event, Lock, Thread
 from pynput import keyboard 
 import ctypes
 from ctypes import windll
@@ -71,19 +72,10 @@ if _project_root not in sys.path:
 # Style-Bert-VITS2のTTSを使用
 from style_bert_vits2.tts_model import TTSModel
 
-# 英語→カタカナ変換用のテキストプリプロセッサをインポート（ローカルコピー優先）
-try:
-    from text_preprocessor import TextPreprocessor
-    text_preprocessor = TextPreprocessor()
-    print("✅ テキストプリプロセッサを初期化しました（英語→カタカナ変換有効）")
-except Exception:
-    try:
-        from dubbing_tools.text_preprocessor import TextPreprocessor
-        text_preprocessor = TextPreprocessor()
-        print("✅ テキストプリプロセッサを初期化しました（英語→カタカナ変換有効）")
-    except Exception as e:
-        print(f"⚠️ テキストプリプロセッサの初期化に失敗しました: {e}")
-        text_preprocessor = None
+# 吹き替えの音声生成と同じテキスト前処理を使用する。
+from dubbing_tools.src.text_preprocessor import get_preprocessor
+
+text_preprocessor = get_preprocessor()
 
 scale_factor = windll.shcore.GetScaleFactorForDevice(0) / 100.0
 
@@ -138,41 +130,13 @@ easy_ocr_tool = None
 tesseract_ocr_tool = None
 tts_model = None
 is_running = False # 処理の多重起動を防ぐためのフラグ
+ocr_requests = Queue(maxsize=1)
+state_lock = Lock()
+speech_active = False
+speech_cancelled = Event()
 
 # 現在押されているキーを追跡するためのグローバルセット
 current_keys = set() 
-
-# 正規化辞書（誤認識 → 正しい表記）
-NORMALIZATION_DICT = {
-    " ": "",      # 半角スペース削除
-    "　": "",      # 全角スペース削除
-    "\n": "",     # 改行削除
-    "\r": "",     # 改行削除
-    "~般的": "一般的",
-    "魅カ": "魅力",
-    "均-": "均一",
-    "猫い": "描い",
-    "猫く": "描く",
-    "猫〈": "描く",
-    "猫る": "描る",
-    "猫け": "描け",
-    "カーフ": "カーブ",
-    "摘く": "描く",
-    "落ち考い": "落ち着い",
-    "榛足": "襟足",
-    "|": "",
-    "[": "",
-    "]": "",
-    "四ま": "凹ま",
-    "四む": "凹む",
-    "四ん": "凹ん",
-    "中問": "中間",
-    "橋円": "楕円",
-    "顕頂部": "頭頂部",
-    "顕部": "頭部",
-    "シト日": "ジト目",
-    "オ能": "才能",
-}
 
 # ==============================================================================
 # 補助関数
@@ -238,37 +202,29 @@ def _resize_image(image, scale=2.0):
     resized_image = cv2.resize(image, (new_width, new_height), interpolation=cv2.INTER_CUBIC)
     return resized_image
 
-def _normalize_text(text: str, normalization_dict: dict = NORMALIZATION_DICT) -> str:
-    """
-    正規化辞書に基づいてOCR結果の文字列を修正する関数。
-
-    Parameters:
-        text (str): 元のOCR抽出テキスト
-        normalization_dict (dict): 誤認識 → 正しい表記の辞書
-
-    Returns:
-        str: 修正後のテキスト
-    """
-    for wrong, correct in normalization_dict.items():
-        text = text.replace(wrong, correct)
-    return text.strip()
-
 # ==============================================================================
 # ユーティリティ関数
 # ==============================================================================
 
 def speak_with_style_bert_vits2(text_to_speak: str):
     """ Style-Bert-VITS2を使用してテキストを読み上げます。 """
-    global tts_model
+    global speech_active
     
     if tts_model is None:
         print("⚠️ TTSモデルが初期化されていません。")
         return
     
+    with state_lock:
+        speech_cancelled.clear()
+        speech_active = True
+
+    tmp_path = None
     try:
         print(f"🔊 読み上げ中: {text_to_speak}")
         # 音声生成
         sr, audio = tts_model.infer(text=text_to_speak)
+        if speech_cancelled.is_set():
+            return
         
         # 一時ファイルに保存して再生
         import tempfile
@@ -277,25 +233,35 @@ def speak_with_style_bert_vits2(text_to_speak: str):
         
         with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp_file:
             tmp_path = tmp_file.name
-            # soundfileを使って保存（numpyとの互換性問題を回避）
-            sf.write(tmp_path, audio, sr)
+        sf.write(tmp_path, audio, sr)
         
         # pygame で再生
         pygame.mixer.init()
-        pygame.mixer.music.load(tmp_path)
-        pygame.mixer.music.set_volume(VOLUME)
-        pygame.mixer.music.play()
-        
-        while pygame.mixer.music.get_busy():
-            time.sleep(0.1)
-        
-        pygame.mixer.quit()
-        os.unlink(tmp_path)
+        try:
+            pygame.mixer.music.load(tmp_path)
+            pygame.mixer.music.set_volume(VOLUME)
+            with state_lock:
+                if speech_cancelled.is_set():
+                    return
+                pygame.mixer.music.play()
+            while pygame.mixer.music.get_busy():
+                if speech_cancelled.wait(0.05):
+                    pygame.mixer.music.stop()
+                    break
+        finally:
+            pygame.mixer.quit()
         
     except Exception as e:
         print(f"⚠️ TTS再生エラーが発生しました: {e}")
         import traceback
         traceback.print_exc()
+    finally:
+        try:
+            if tmp_path is not None:
+                os.unlink(tmp_path)
+        finally:
+            with state_lock:
+                speech_active = False
 
 # ==============================================================================
 # 画面選択とキャプチャ用クラス
@@ -483,10 +449,8 @@ class ScreenOCRTool_easyocr:
             image = _resize_image(image, scale=2.0) 
             results = self.reader.readtext(image)
             if results:
-                # 抽出結果を改行で結合し、不要なスペースを削除
-                text = "\n".join([text for _, text, _ in results]).replace(" ", "")
+                text = "\n".join([text for _, text, _ in results])
                 
-                # 日本語の誤認識修正を追加（_normalize_textで後処理される）
                 
                 return text.strip()
             else:
@@ -591,67 +555,47 @@ def main_ocr_process():
 
     print(f"最終判定結果: {status_message}")
 
-    final_text = ""
-    
     # 3. 判定結果に基づきOCRエンジンを切り替え
     if is_handwriting:
         print("✍️ 手書き文字と判定されました。EasyOCRで詳細抽出します。")
-        final_text = easy_ocr_tool.run_ocr(image)
+        extracted_text = easy_ocr_tool.run_ocr(image)
     else:
         print("🖨️ 印刷文字と判定されました。Tesseract OCRで詳細抽出します。")
-        final_text = tesseract_ocr_tool.run_ocr(image)
-    
-    #正規化
-    final_text = _normalize_text(final_text)
+        extracted_text = tesseract_ocr_tool.run_ocr(image)
 
-    # 4. 英語→カタカナ変換（辞書ベース）
-    if text_preprocessor is not None:
-        try:
-            processed_text = text_preprocessor.convert_english_to_katakana(final_text)
-            if processed_text != final_text:
-                print("\n--- 英語→カタカナ変換 ---")
-                print(f"変換前: {final_text}")
-                print(f"変換後: {processed_text}")
-                print("--------------------------")
-                final_text = processed_text
-        except Exception as e:
-            print(f"⚠️ テキスト変換エラー: {e}")
+    print(f"\n--- 抽出されたテキスト ---\n{extracted_text}\n")
+    if not extracted_text.strip() or extracted_text.startswith(
+        ("[テキストが検出されませんでした]", "[OCR失敗")
+    ):
+        return extracted_text
 
-    # 5. 結果出力
-    print("\n--- 抽出されたテキスト ---\n")
-    # 不要な空白（スペース）を削除して表示
-    print(final_text) 
-    print("\n--------------------------")
-    
-    # 6. Style-Bert-VITS2で読み上げ
-    if final_text and not final_text.startswith('[') and len(final_text.strip()) > 0:
-        # 読み上げ前に改行と空白を整形
-        text_to_speak = final_text
+    # SRT の entry.text と同じ前処理を、OCR の抽出結果に一度だけ適用する。
+    text_to_speak = text_preprocessor.preprocess(extracted_text)
+    if text_to_speak != extracted_text:
+        print("\n--- 読み上げ用テキスト変換 ---")
+        print(f"変換前: {extracted_text}")
+        print(f"変換後: {text_to_speak}")
+        print("--------------------------")
+    if text_to_speak.strip():
         speak_with_style_bert_vits2(text_to_speak)
 
-    return final_text
+    return text_to_speak
 
 # ==============================================================================
 # ホットキーハンドラ (pynput用に変更)
 # ==============================================================================
 # pynputのロジックに合わせたラッパー関数 on_hotkey_action
 def on_hotkey_action():
-    """ ホットキーが押されたときに実行される関数。多重起動を防止し、メインOCRプロセスを呼び出します。 """
+    """OCRを予約し、読み上げ中なら再生を中断する。"""
     global is_running
-    if is_running:
-        return
-    
-    is_running = True
-    print("\n\n=============================================")
-    # 出力メッセージを汎用的なものに修正
-    print("▶️ Shift + F9 ホットキーが押されました。OCR開始")
-    print("=============================================")
-    try:
-        main_ocr_process()
-    except Exception as e:
-        print(f"❌ 処理中に予期せぬエラーが発生しました: {e}")
-    finally:
-        is_running = False
+    with state_lock:
+        if speech_active:
+            speech_cancelled.set()
+        elif is_running:
+            return
+        if ocr_requests.empty():
+            ocr_requests.put_nowait(None)
+        is_running = True
 
 # pynput.Listenerのコールバック関数に修正 (Shift + F9判定ロジックを導入)
 def on_press(key):
@@ -661,6 +605,8 @@ def on_press(key):
     try:
         # 押されたキーを追跡セットに追加 (複合キー判定用)
         # Shift, Ctrl, Altなどの修飾キーもセットに保持
+        if key in current_keys:
+            return
         current_keys.add(key)
         
         # 設定されたトリガーキー（F9）を検出
@@ -691,6 +637,26 @@ def on_release(key):
 # ==============================================================================
 # アプリケーション起動関数 (pynput用に変更)
 # ==============================================================================
+def run_ocr_requests(shutdown: Event):
+    """同じスレッドで範囲選択と読み上げを順番に実行する。"""
+    global is_running
+    while not shutdown.is_set():
+        try:
+            ocr_requests.get(timeout=0.2)
+        except Empty:
+            continue
+        if shutdown.is_set():
+            return
+        try:
+            print("\n▶️ Shift + F9 ホットキーが押されました。OCR開始")
+            main_ocr_process()
+        except Exception as e:
+            print(f"❌ 処理中に予期せぬエラーが発生しました: {e}")
+        finally:
+            with state_lock:
+                is_running = not ocr_requests.empty()
+
+
 def start_hotkey_ocr_app():
     """ アプリケーションの初期化、ホットキー登録、および実行ループを開始します。 """
 
@@ -706,16 +672,22 @@ def start_hotkey_ocr_app():
     hotkey_name = "Shift + F9"
         
     print(f"キーボードの {hotkey_name} キーを押して、画面OCRを開始してください。")
+    print(f"読み上げ中に {hotkey_name} を押すと、再生を停止して次の範囲選択を開始します。")
     print("プログラムを終了するには Ctrl+C を押してください。")
     
+    shutdown = Event()
     try:
         with keyboard.Listener(on_press=on_press, on_release=on_release) as listener:
+            Thread(target=run_ocr_requests, args=(shutdown,), daemon=True).start()
             listener.join()
         
     except KeyboardInterrupt:
         print("\nプログラムを終了します。")
     except Exception as e:
         print(f"ホットキー監視中に予期せぬエラーが発生しました: {e}")
+    finally:
+        shutdown.set()
+        speech_cancelled.set()
 
 # Pythonのエントリーポイント
 if __name__ == "__main__":

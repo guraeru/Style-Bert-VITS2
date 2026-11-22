@@ -12,11 +12,11 @@ ocr_tool/
 ├── ocr_tool.py              # メインスクリプト
 ├── OCR.py                   # OCRエンジンクラス群
 ├── text_preprocessor.py     # 英語→カタカナ変換
-├── english_katakana_dict.csv # 英語→カタカナ辞書
-├── reading_adjustments.csv  # 読み方調整辞書
 ├── settings.ini             # 設定ファイル
 └── README.md
 ```
+
+辞書はリポジトリ直下の `dictionary/english_katakana_dict.csv` と `dictionary/reading_adjustments.csv` を使用します。
 
 ## 必要な環境
 
@@ -96,6 +96,7 @@ python ocr_tool.py
 ### 操作方法
 1. プログラムを起動すると、バックグラウンドで待機状態になります
 2. **Shift + F9** を押すと、画面選択モードに入ります
+   - 読み上げ中に再度 **Shift + F9** を押すと、再生を停止して次の画面選択に入ります。
 3. マウスで読み取りたい領域をドラッグして選択
 4. 自動的にOCRが実行され、結果が読み上げられます
 5. 終了する場合は Ctrl+C を押してください

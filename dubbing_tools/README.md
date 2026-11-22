@@ -196,7 +196,8 @@ dubbing_tools/
 │   ├── video_combiner.py       # 動画結合
 │   ├── text_preprocessor.py    # テキスト前処理
 │   ├── batch_processor.py      # バッチ処理ユーティリティ
-│   ├── progress_manager.py     # 進捗保存・再開管理
-│   └── english_katakana_dict.csv  # 英語→カタカナ辞書
+│   └── progress_manager.py     # 進捗保存・再開管理
 └── README.md
 ```
+
+辞書はリポジトリ直下の `dictionary/english_katakana_dict.csv` と `dictionary/reading_adjustments.csv` を使用します。
